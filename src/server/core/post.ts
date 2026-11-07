@@ -2,6 +2,6 @@ import { reddit } from '@devvit/web/server';
 
 export const createPost = async () => {
   return await reddit.submitCustomPost({
-    title: 'red-guardian-ai',
+    title: '🛡️ Red-Guard — Autonomous Moderation & Threat Radar',
   });
 };

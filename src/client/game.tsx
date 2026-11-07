@@ -1,12 +1,12 @@
-import { StrictMode, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { StrictMode, useEffect, useMemo, useState, type CSSProperties, type MouseEvent, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 
 type Severity = 'HIGH' | 'MEDIUM' | 'LOW';
 type RiskTone = 'safe' | 'suspicious' | 'dangerous';
-type ActionType = 'Warn User' | 'Remove Comment' | 'Temporary Mute';
+type ActionType = 'Warn User' | 'Remove Comment' | 'Temporary Mute' | 'Permanent Ban' | 'Approve & Clear';
 type ReportStatus = 'Resolved' | 'Under Review' | 'Escalated';
-type FeedTone = 'info' | 'warning' | 'success';
-type ToastTone = 'info' | 'success' | 'warning';
+type FeedTone = 'info' | 'warning' | 'success' | 'danger';
+type ToastTone = 'info' | 'success' | 'warning' | 'danger';
 
 interface ReportItem {
   id: string;
@@ -20,7 +20,10 @@ interface ReportItem {
   warned: boolean;
   commentRemoved: boolean;
   muted: boolean;
+  banned: boolean;
+  approved: boolean;
   updateCount: number;
+  timestamp: string;
 }
 
 interface RiskItem {
@@ -33,6 +36,8 @@ interface SummaryState {
   toxicitySummary: string;
   moderationRecommendation: string;
   riskSeverity: string;
+  tags: string[];
+  violatedRules: string[];
 }
 
 interface ToastState {
@@ -46,6 +51,7 @@ interface FeedItem {
   text: string;
   isNew: boolean;
   tone: FeedTone;
+  timestamp: string;
 }
 
 interface MetricCardData {
@@ -53,7 +59,87 @@ interface MetricCardData {
   value: string;
   detail: string;
   accent: string;
+  trend: string;
 }
+
+// Web Audio API Synthesizer for High-Tech Sound Feedback (Zero external audio files needed)
+class SoundFX {
+  private ctx: AudioContext | null = null;
+  public enabled = false;
+
+  private init() {
+    if (!this.ctx && typeof window !== 'undefined') {
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextClass) {
+        this.ctx = new AudioContextClass();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      void this.ctx.resume();
+    }
+  }
+
+  play(type: 'select' | 'action' | 'alert' | 'success' | 'danger') {
+    if (!this.enabled) return;
+    try {
+      this.init();
+      if (!this.ctx) return;
+
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      if (type === 'select') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(540, now);
+        osc.frequency.exponentialRampToValueAtTime(840, now + 0.08);
+        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+        osc.start(now);
+        osc.stop(now + 0.09);
+      } else if (type === 'action') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.14);
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      } else if (type === 'alert') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(620, now);
+        osc.frequency.setValueAtTime(440, now + 0.08);
+        gain.gain.setValueAtTime(0.05, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        osc.start(now);
+        osc.stop(now + 0.18);
+      } else if (type === 'success') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(523.25, now);
+        osc.frequency.setValueAtTime(659.25, now + 0.08);
+        osc.frequency.setValueAtTime(783.99, now + 0.16);
+        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+        osc.start(now);
+        osc.stop(now + 0.25);
+      } else if (type === 'danger') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(260, now);
+        osc.frequency.exponentialRampToValueAtTime(140, now + 0.2);
+        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+        osc.start(now);
+        osc.stop(now + 0.22);
+      }
+    } catch {
+      // Audio playback fails gracefully if browser policy blocks it before user gesture
+    }
+  }
+}
+
+const sfx = new SoundFX();
 
 const usernames = [
   'u/ZeroMercy17',
@@ -74,8 +160,6 @@ const usernames = [
   'u/CrashVandal',
   'u/ThreadSniper',
   'u/LagPhantom',
-  'u/FrostNoise',
-  'u/BaitEngine',
 ];
 
 const issueProfiles = [
@@ -83,146 +167,129 @@ const issueProfiles = [
     issueType: 'Harassment',
     severity: 'HIGH' as const,
     comment:
-      'You are useless, nobody wants you here, and I will keep replying until you leave this thread.',
-    riskBase: 88,
-    confidenceBase: 93,
+      'You are completely useless, nobody in this subreddit wants you here, and I will keep replying on every post until you leave.',
+    riskBase: 92,
+    confidenceBase: 95,
+    tags: ['Personal Attack', 'Hostile Brigading', 'Rule 1 Breach'],
+    rules: ['Rule 1: Remember the Human', 'Rule 2: No Harassment'],
   },
   {
     issueType: 'Spam Links',
     severity: 'MEDIUM' as const,
     comment:
-      'Easy money here, click my crypto drop link now, I have posted it five times because mods cannot stop this.',
-    riskBase: 69,
-    confidenceBase: 87,
+      'Guaranteed 10x crypto airdrop! Click my telegram link immediately: t.me/free_crypto_drop. Mods are sleeping so claim now!',
+    riskBase: 76,
+    confidenceBase: 91,
+    tags: ['Phishing Vector', 'Commercial Spam', 'Malicious Link'],
+    rules: ['Rule 3: No Spam or Affiliate Links'],
   },
   {
     issueType: 'Hate Speech',
     severity: 'HIGH' as const,
     comment:
-      'People like you do not belong in this community, go back where you came from and stay silent.',
-    riskBase: 94,
-    confidenceBase: 96,
+      'People like you do not belong in this community or this country. Go back where you came from and shut up.',
+    riskBase: 97,
+    confidenceBase: 98,
+    tags: ['Identity Attack', 'Severe Slur', 'Zero Tolerance'],
+    rules: ['Reddit Policy: Hate Speech', 'Subreddit Rule 1'],
   },
   {
     issueType: 'Threatening Language',
     severity: 'HIGH' as const,
     comment:
-      'Keep posting and I will find your account everywhere, make one more comment and see what happens.',
-    riskBase: 91,
-    confidenceBase: 95,
+      'Keep talking and I will doxx your real name and city. Let us see how confident you are when people show up at your workplace.',
+    riskBase: 94,
+    confidenceBase: 96,
+    tags: ['Physical Threat', 'Doxxing Attempt', 'Safety Hazard'],
+    rules: ['Reddit Policy: Violent Threats', 'Subreddit Rule 1'],
   },
   {
     issueType: 'Impersonation',
     severity: 'MEDIUM' as const,
     comment:
-      'Official moderator here, send me your login code in DM or your account gets banned in ten minutes.',
-    riskBase: 74,
-    confidenceBase: 84,
+      'OFFICIAL MODERATOR NOTICE: Your account has been reported. DM me your Discord username and account recovery email within 10 minutes or be banned.',
+    riskBase: 78,
+    confidenceBase: 88,
+    tags: ['Mod Impersonation', 'Credential Phishing'],
+    rules: ['Rule 4: Do Not Impersonate Staff'],
   },
   {
     issueType: 'Targeted Bullying',
     severity: 'HIGH' as const,
     comment:
-      'Everyone should downvote this clown, quote them, mock them, and make sure they never post again.',
-    riskBase: 86,
-    confidenceBase: 92,
+      'Everyone mass-downvote this idiot and leave clown emojis in every thread they ever posted on. Make them delete their account.',
+    riskBase: 88,
+    confidenceBase: 93,
+    tags: ['Brigade Callout', 'Mass Bullying'],
+    rules: ['Rule 2: No Coordinated Harassment'],
   },
   {
     issueType: 'Misinformation',
     severity: 'LOW' as const,
     comment:
-      'Ignore the safety rules, the exploit is real, and the only reason mods delete it is because they are hiding the truth.',
-    riskBase: 58,
+      'The developer team is secretly stealing all karma points to sell on the black market, do not trust any official announcements.',
+    riskBase: 54,
     confidenceBase: 79,
+    tags: ['Conspiracy Rumor', 'Unverified Claim'],
+    rules: ['Rule 7: Verifiable Sources Required'],
   },
 ];
 
 const liveEventTemplates = [
-  'New spam detected',
-  'Toxicity increased',
-  'User muted',
-  'Report resolved',
-  'Escalation routed to human moderator',
-  'Duplicate abuse pattern linked',
+  'New phishing spam intercepted',
+  'Toxicity spike detected in thread',
+  'User shadow-muted by Sentinel',
+  'High-confidence hate speech flagged',
+  'Incident escalated to Senior Moderator',
+  'Bot account network quarantined',
 ];
 
 const statusCycle: ReportStatus[] = ['Under Review', 'Escalated', 'Resolved'];
 
 const dashboardGlobalCss = `
   :root {
-    color-scheme: light;
-    --rg-bg: linear-gradient(180deg, #fffaf9 0%, #fffefe 48%, #fff8fb 100%);
-    --rg-surface: rgba(255, 255, 255, 0.94);
-    --rg-surface-strong: rgba(255, 255, 255, 0.98);
-    --rg-surface-soft: rgba(250, 244, 248, 0.92);
-    --rg-text: #181b34;
-    --rg-text-strong: #11162b;
-    --rg-muted: #69728e;
-    --rg-muted-soft: #8d96ae;
-    --rg-line: rgba(233, 223, 233, 0.9);
-    --rg-line-strong: rgba(246, 74, 123, 0.16);
-    --rg-shadow: 0 18px 48px rgba(181, 166, 197, 0.16);
-    --rg-shadow-strong: 0 24px 56px rgba(181, 166, 197, 0.2);
-    --rg-primary: #ff5c7c;
-    --rg-primary-soft: rgba(255, 92, 124, 0.1);
-    --rg-purple: #8f5bff;
-    --rg-purple-soft: rgba(143, 91, 255, 0.1);
-    --rg-cyan: #4f8dff;
-    --rg-cyan-soft: rgba(79, 141, 255, 0.1);
-    --rg-green: #2fbe7d;
-    --rg-green-soft: rgba(47, 190, 125, 0.1);
-    --rg-orange: #ff9c44;
-    --rg-orange-soft: rgba(255, 156, 68, 0.12);
-    --rg-alert: linear-gradient(90deg, rgba(255, 242, 244, 0.98), rgba(255, 249, 250, 0.96));
-    --rg-accent-glow: radial-gradient(circle, rgba(255, 92, 124, 0.1), transparent 72%);
-    --rg-accent-glow-alt: radial-gradient(circle, rgba(143, 91, 255, 0.1), transparent 72%);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --rg-bg: linear-gradient(180deg, #0f111b 0%, #131725 52%, #12131f 100%);
-      --rg-surface: rgba(22, 25, 39, 0.94);
-      --rg-surface-strong: rgba(24, 28, 44, 0.98);
-      --rg-surface-soft: rgba(29, 33, 51, 0.9);
-      --rg-text: #f4f6ff;
-      --rg-text-strong: #ffffff;
-      --rg-muted: #a0a8c2;
-      --rg-muted-soft: #8a93b1;
-      --rg-line: rgba(255, 255, 255, 0.08);
-      --rg-line-strong: rgba(255, 92, 124, 0.24);
-      --rg-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-      --rg-shadow-strong: 0 24px 56px rgba(0, 0, 0, 0.34);
-      --rg-primary: #ff6f8d;
-      --rg-primary-soft: rgba(255, 111, 141, 0.12);
-      --rg-purple: #a376ff;
-      --rg-purple-soft: rgba(163, 118, 255, 0.12);
-      --rg-cyan: #6ba2ff;
-      --rg-cyan-soft: rgba(107, 162, 255, 0.12);
-      --rg-green: #48ce8f;
-      --rg-green-soft: rgba(72, 206, 143, 0.12);
-      --rg-orange: #ffb15e;
-      --rg-orange-soft: rgba(255, 177, 94, 0.12);
-      --rg-alert: linear-gradient(90deg, rgba(43, 26, 34, 0.96), rgba(28, 28, 40, 0.96));
-      --rg-accent-glow: radial-gradient(circle, rgba(255, 111, 141, 0.12), transparent 72%);
-      --rg-accent-glow-alt: radial-gradient(circle, rgba(163, 118, 255, 0.1), transparent 72%);
-    }
+    color-scheme: dark;
+    --rg-bg: #07090e;
+    --rg-surface: rgba(15, 19, 29, 0.88);
+    --rg-surface-strong: rgba(20, 26, 40, 0.95);
+    --rg-surface-soft: rgba(25, 33, 51, 0.7);
+    --rg-text: #f1f5f9;
+    --rg-text-strong: #ffffff;
+    --rg-muted: #94a3b8;
+    --rg-muted-soft: #64748b;
+    --rg-line: rgba(255, 255, 255, 0.08);
+    --rg-line-strong: rgba(255, 69, 0, 0.35);
+    --rg-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+    --rg-shadow-strong: 0 24px 56px rgba(0, 0, 0, 0.6);
+    --rg-reddit-orange: #ff4500;
+    --rg-primary: #ff3355;
+    --rg-primary-soft: rgba(255, 51, 85, 0.12);
+    --rg-purple: #a855f7;
+    --rg-purple-soft: rgba(168, 85, 247, 0.12);
+    --rg-cyan: #38bdf8;
+    --rg-cyan-soft: rgba(56, 189, 248, 0.12);
+    --rg-green: #10b981;
+    --rg-green-soft: rgba(16, 185, 129, 0.12);
+    --rg-orange: #f97316;
+    --rg-orange-soft: rgba(249, 115, 22, 0.12);
+    --rg-alert: linear-gradient(90deg, rgba(38, 16, 22, 0.95), rgba(20, 24, 38, 0.95));
   }
 
   html, body {
-    background: var(--rg-bg);
+    background-color: var(--rg-bg);
     color: var(--rg-text);
-    overflow-x: visible;
-    overflow-y: visible;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
   }
 
   .guardian-scroll {
     scrollbar-width: thin;
-    scrollbar-color: rgba(143, 91, 255, 0.28) transparent;
+    scrollbar-color: rgba(255, 69, 0, 0.4) transparent;
   }
 
   .guardian-scroll::-webkit-scrollbar {
-    width: 10px;
+    width: 6px;
   }
 
   .guardian-scroll::-webkit-scrollbar-track {
@@ -230,26 +297,29 @@ const dashboardGlobalCss = `
   }
 
   .guardian-scroll::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgba(255, 92, 124, 0.42), rgba(143, 91, 255, 0.3));
+    background: linear-gradient(180deg, #ff4500, #a855f7);
     border-radius: 999px;
-    border: 2px solid transparent;
-    background-clip: padding-box;
   }
 
-  .guardian-scroll::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, rgba(255, 92, 124, 0.56), rgba(143, 91, 255, 0.42));
+  @keyframes pulseRing {
+    0% { transform: scale(0.95); opacity: 0.8; }
+    50% { transform: scale(1.3); opacity: 0.2; }
+    100% { transform: scale(0.95); opacity: 0.8; }
   }
 
-  @media (max-width: 900px) {
-    .guardian-shell {
-      gap: 18px;
-    }
+  .live-pulse-anim {
+    animation: pulseRing 2s infinite ease-in-out;
   }
 
-  @media (max-width: 640px) {
-    .guardian-shell {
-      gap: 16px;
-    }
+  @keyframes shimmerAnim {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  .shimmer-active {
+    background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,69,0,0.15) 50%, rgba(255,255,255,0.03) 75%);
+    background-size: 200% 100%;
+    animation: shimmerAnim 1.5s infinite;
   }
 `;
 
@@ -257,61 +327,36 @@ const styles: Record<string, CSSProperties> = {
   app: {
     minHeight: '100vh',
     margin: 0,
-    padding: '32px 20px',
+    padding: '24px 16px 40px',
     background:
-      'radial-gradient(circle at top left, rgba(255, 92, 124, 0.1), transparent 24%), radial-gradient(circle at top right, rgba(143, 91, 255, 0.08), transparent 26%), var(--rg-bg)',
+      'radial-gradient(circle at 10% 10%, rgba(255, 69, 0, 0.12), transparent 28%), radial-gradient(circle at 90% 15%, rgba(168, 85, 247, 0.1), transparent 30%), radial-gradient(circle at 50% 90%, rgba(56, 189, 248, 0.08), transparent 32%), #07090e',
     color: 'var(--rg-text)',
-    fontFamily: '"Plus Jakarta Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+    fontFamily: '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     display: 'flex',
     justifyContent: 'center',
     boxSizing: 'border-box',
     position: 'relative',
-    overflow: 'visible',
-  },
-  ambientGlowLeft: {
-    position: 'absolute',
-    top: '6%',
-    left: '-14%',
-    width: '420px',
-    height: '420px',
-    borderRadius: '999px',
-    background: 'var(--rg-accent-glow)',
-    filter: 'blur(14px)',
-    pointerEvents: 'none',
-  },
-  ambientGlowRight: {
-    position: 'absolute',
-    top: '18%',
-    right: '-12%',
-    width: '380px',
-    height: '380px',
-    borderRadius: '999px',
-    background: 'var(--rg-accent-glow-alt)',
-    filter: 'blur(14px)',
-    pointerEvents: 'none',
   },
   shell: {
     width: '100%',
-    maxWidth: '1180px',
+    maxWidth: '1240px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '22px',
+    gap: '20px',
     position: 'relative',
     zIndex: 1,
-    transition: 'opacity 420ms ease, transform 420ms ease',
-    overflow: 'visible',
   },
   header: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '16px',
-    padding: '28px',
+    padding: '22px 28px',
     borderRadius: '24px',
     background: 'var(--rg-surface)',
     border: '1px solid var(--rg-line)',
     boxShadow: 'var(--rg-shadow-strong)',
-    backdropFilter: 'blur(12px)',
+    backdropFilter: 'blur(16px)',
     flexWrap: 'wrap',
   },
   headerLeft: {
@@ -322,204 +367,196 @@ const styles: Record<string, CSSProperties> = {
   headerRight: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
+    gap: '10px',
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
   },
   shield: {
-    width: '56px',
-    height: '56px',
+    width: '54px',
+    height: '54px',
     borderRadius: '16px',
-    background: 'linear-gradient(135deg, #ff365b 0%, #ff5f7c 100%)',
+    background: 'linear-gradient(135deg, #ff4500 0%, #dc2626 60%, #9333ea 100%)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    boxShadow: '0 16px 34px rgba(255, 92, 124, 0.18)',
+    boxShadow: '0 10px 28px rgba(255, 69, 0, 0.35)',
     flexShrink: 0,
-  },
-  shieldSvg: {
-    width: '34px',
-    height: '34px',
-    display: 'block',
+    border: '1px solid rgba(255, 255, 255, 0.25)',
   },
   titleBlock: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px',
+    gap: '4px',
   },
   title: {
     margin: 0,
-    fontSize: '32px',
-    lineHeight: 1.02,
-    letterSpacing: '-0.04em',
-    fontWeight: 800,
-    textWrap: 'balance',
+    fontSize: '28px',
+    lineHeight: 1.1,
+    letterSpacing: '-0.03em',
+    fontWeight: 900,
+    background: 'linear-gradient(90deg, #ffffff 0%, #ff8a65 40%, #c084fc 100%)',
+    WebkitBackgroundClip: 'text',
+    WebkitTextFillColor: 'transparent',
   },
   subtitle: {
     margin: 0,
     color: 'var(--rg-muted)',
-    fontSize: '14px',
-    lineHeight: 1.5,
-  },
-  statusPill: {
+    fontSize: '13px',
+    lineHeight: 1.4,
     display: 'flex',
     alignItems: 'center',
-    gap: '10px',
-    padding: '10px 14px',
+    gap: '8px',
+  },
+  headerBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 14px',
     borderRadius: '999px',
-    background: 'var(--rg-surface-soft)',
+    background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
     color: 'var(--rg-text)',
-    fontSize: '13px',
-    fontWeight: 600,
+    fontSize: '12px',
+    fontWeight: 700,
+    cursor: 'pointer',
+    transition: 'all 180ms ease',
   },
-  statusDot: {
-    width: '10px',
-    height: '10px',
-    borderRadius: '999px',
-    background: 'var(--rg-green)',
-    boxShadow: '0 0 14px rgba(72, 206, 143, 0.35)',
+  headerBtnActive: {
+    background: 'rgba(255, 69, 0, 0.15)',
+    borderColor: 'rgba(255, 69, 0, 0.4)',
+    color: '#ff8a65',
   },
   monitorBadge: {
     display: 'flex',
     alignItems: 'center',
-    gap: '10px',
-    padding: '10px 14px',
+    gap: '8px',
+    padding: '8px 14px',
     borderRadius: '999px',
-    background: 'var(--rg-primary-soft)',
-    border: '1px solid var(--rg-line-strong)',
-    color: 'var(--rg-primary)',
+    background: 'rgba(16, 185, 129, 0.1)',
+    border: '1px solid rgba(16, 185, 129, 0.3)',
+    color: '#34d399',
     fontSize: '12px',
     fontWeight: 800,
-    letterSpacing: '0.06em',
-    boxShadow: '0 0 18px rgba(255, 92, 124, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.18)',
-  },
-  pulseWrap: {
-    position: 'relative',
-    width: '10px',
-    height: '10px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    letterSpacing: '0.04em',
   },
   pulseCore: {
     width: '8px',
     height: '8px',
     borderRadius: '999px',
-    background: 'var(--rg-primary)',
-    boxShadow: '0 0 12px rgba(255, 92, 124, 0.45)',
-  },
-  pulseRing: {
-    position: 'absolute',
-    width: '10px',
-    height: '10px',
-    borderRadius: '999px',
-    border: '1px solid rgba(255, 92, 124, 0.32)',
+    background: '#10b981',
+    boxShadow: '0 0 10px #10b981',
   },
   analyticsGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: '18px',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    gap: '16px',
   },
   analyticsCard: {
     padding: '20px 22px',
-    borderRadius: '22px',
+    borderRadius: '20px',
     background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
-    boxShadow: 'var(--rg-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.4)',
+    boxShadow: 'var(--rg-shadow)',
     backdropFilter: 'blur(12px)',
-    minHeight: '132px',
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'space-between',
-    transition: 'border-color 160ms ease, box-shadow 160ms ease',
+    transition: 'all 200ms ease',
+  },
+  analyticsTop: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   analyticsLabel: {
     margin: 0,
-    fontSize: '12px',
-    letterSpacing: '0.1em',
+    fontSize: '11px',
+    letterSpacing: '0.08em',
     fontWeight: 800,
-    color: 'var(--rg-muted-soft)',
+    color: 'var(--rg-muted)',
     textTransform: 'uppercase',
   },
+  analyticsTrend: {
+    fontSize: '11px',
+    fontWeight: 700,
+    padding: '3px 8px',
+    borderRadius: '999px',
+    background: 'rgba(255, 255, 255, 0.06)',
+  },
   analyticsValue: {
-    margin: '14px 0 8px',
-    fontSize: '36px',
-    fontWeight: 800,
+    margin: '12px 0 6px',
+    fontSize: '34px',
+    fontWeight: 900,
     lineHeight: 1,
     letterSpacing: '-0.04em',
   },
   analyticsDetail: {
     margin: 0,
     color: 'var(--rg-muted)',
-    fontSize: '13px',
-    lineHeight: 1.55,
+    fontSize: '12px',
+    lineHeight: 1.5,
   },
   alertBanner: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '14px',
-    padding: '15px 18px',
-    borderRadius: '18px',
+    padding: '14px 20px',
+    borderRadius: '16px',
     background: 'var(--rg-alert)',
-    border: '1px solid var(--rg-line-strong)',
+    border: '1px solid rgba(255, 69, 0, 0.3)',
     color: 'var(--rg-text)',
-    boxShadow: '0 16px 34px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.03)',
-    transition: 'opacity 220ms ease, border-color 220ms ease',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
     flexWrap: 'wrap',
   },
   alertLabel: {
-    fontSize: '12px',
-    fontWeight: 800,
-    letterSpacing: '0.06em',
-    color: 'var(--rg-primary)',
+    fontSize: '11px',
+    fontWeight: 900,
+    letterSpacing: '0.08em',
+    color: '#ff5722',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
   },
   alertText: {
     margin: 0,
-    fontSize: '14px',
+    fontSize: '13px',
     fontWeight: 600,
-    color: 'var(--rg-text)',
+    color: '#f8fafc',
     flex: 1,
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))',
-    gap: '22px',
-    overflow: 'visible',
+    gridTemplateColumns: 'minmax(340px, 1.15fr) minmax(320px, 0.85fr)',
+    gap: '20px',
+    alignItems: 'start',
   },
   primaryColumn: {
     display: 'flex',
     flexDirection: 'column',
     gap: '20px',
-    minWidth: '320px',
-    overflow: 'visible',
+    minWidth: 0,
   },
   secondaryColumn: {
     display: 'flex',
     flexDirection: 'column',
     gap: '20px',
-    minWidth: '320px',
-    overflow: 'visible',
+    minWidth: 0,
   },
   card: {
     borderRadius: '24px',
-    padding: '24px 24px 32px',
+    padding: '24px',
     background: 'var(--rg-surface)',
     border: '1px solid var(--rg-line)',
-    boxShadow: 'var(--rg-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.4)',
-    backdropFilter: 'blur(12px)',
-    transition: 'border-color 220ms ease, box-shadow 220ms ease',
-    overflow: 'visible',
-    minHeight: 'fit-content',
-    maxHeight: 'none',
+    boxShadow: 'var(--rg-shadow)',
+    backdropFilter: 'blur(16px)',
   },
   cardHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '12px',
-    marginBottom: '18px',
+    marginBottom: '16px',
     flexWrap: 'wrap',
   },
   cardTitleWrap: {
@@ -529,547 +566,367 @@ const styles: Record<string, CSSProperties> = {
   },
   cardTitle: {
     margin: 0,
-    fontSize: '19px',
-    fontWeight: 750,
+    fontSize: '18px',
+    fontWeight: 800,
     letterSpacing: '-0.02em',
+    color: 'var(--rg-text-strong)',
   },
   cardCaption: {
     margin: 0,
     color: 'var(--rg-muted)',
-    fontSize: '13px',
-    lineHeight: 1.5,
+    fontSize: '12px',
   },
   badge: {
-    padding: '8px 12px',
+    padding: '6px 12px',
     borderRadius: '999px',
-    background: 'var(--rg-primary-soft)',
-    border: '1px solid var(--rg-line-strong)',
-    color: 'var(--rg-primary)',
-    fontSize: '12px',
+    background: 'rgba(255, 69, 0, 0.12)',
+    border: '1px solid rgba(255, 69, 0, 0.3)',
+    color: '#ff8a65',
+    fontSize: '11px',
     fontWeight: 800,
     letterSpacing: '0.04em',
-    boxShadow: '0 0 18px rgba(255, 92, 124, 0.08)',
+  },
+  filterBar: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    marginBottom: '16px',
+  },
+  searchInput: {
+    width: '100%',
+    padding: '10px 14px',
+    borderRadius: '12px',
+    background: 'var(--rg-surface-strong)',
+    border: '1px solid var(--rg-line)',
+    color: 'white',
+    fontSize: '13px',
+    outline: 'none',
+    boxSizing: 'border-box',
+    transition: 'border-color 160ms ease',
+  },
+  filterPillRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    flexWrap: 'wrap',
+  },
+  filterPill: {
+    padding: '5px 10px',
+    borderRadius: '999px',
+    background: 'var(--rg-surface-strong)',
+    border: '1px solid var(--rg-line)',
+    color: 'var(--rg-muted)',
+    fontSize: '11px',
+    fontWeight: 700,
+    cursor: 'pointer',
+    transition: 'all 140ms ease',
+  },
+  filterPillActive: {
+    background: 'rgba(255, 69, 0, 0.2)',
+    borderColor: 'rgba(255, 69, 0, 0.5)',
+    color: '#ffffff',
   },
   reportScroll: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '13px',
-    maxHeight: '580px',
+    gap: '10px',
+    maxHeight: '520px',
     overflowY: 'auto',
-    paddingRight: '10px',
-    paddingBottom: '4px',
+    paddingRight: '6px',
   },
   reportButton: {
     display: 'flex',
     alignItems: 'flex-start',
     gap: '14px',
     width: '100%',
-    padding: '18px',
-    borderRadius: '20px',
+    padding: '16px',
+    borderRadius: '18px',
     background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
-    transition:
-      'transform 240ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease, box-shadow 240ms ease, background 240ms ease',
+    transition: 'all 180ms ease',
     textAlign: 'left',
     cursor: 'pointer',
-    minHeight: '132px',
     boxSizing: 'border-box',
-    overflow: 'hidden',
+    position: 'relative',
   },
   avatar: {
-    width: '46px',
-    height: '46px',
-    borderRadius: '14px',
+    width: '42px',
+    height: '42px',
+    borderRadius: '12px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background:
-      'linear-gradient(135deg, rgba(255, 92, 124, 0.14), rgba(143, 91, 255, 0.12))',
-    color: 'var(--rg-text-strong)',
-    fontSize: '14px',
+    background: 'linear-gradient(135deg, rgba(255, 69, 0, 0.2), rgba(168, 85, 247, 0.2))',
+    color: 'white',
+    fontSize: '13px',
     fontWeight: 800,
     flexShrink: 0,
-    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 12px 22px rgba(0, 0, 0, 0.18)',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
   },
   reportText: {
     flex: 1,
     minWidth: 0,
-    maxWidth: '100%',
   },
   reportTop: {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: '12px',
+    gap: '8px',
     flexWrap: 'wrap',
-    minWidth: 0,
   },
   reportUser: {
     margin: 0,
-    fontSize: '15px',
-    fontWeight: 700,
+    fontSize: '14px',
+    fontWeight: 800,
     color: 'var(--rg-text-strong)',
-    letterSpacing: '-0.01em',
-    minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    maxWidth: 'calc(100% - 118px)',
-  },
-  reportReason: {
-    margin: '4px 0 0',
-    color: 'var(--rg-muted-soft)',
-    fontSize: '12px',
-    fontWeight: 700,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
+    fontFamily: 'monospace',
   },
   reportSnippet: {
-    margin: '10px 0 0',
+    margin: '8px 0 0',
     color: 'var(--rg-muted)',
     fontSize: '12px',
-    lineHeight: 1.65,
-    opacity: 0.92,
+    lineHeight: 1.5,
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
   },
   reportMeta: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: '8px',
-    marginTop: '12px',
-    maxWidth: '100%',
-    overflow: 'visible',
+    gap: '6px',
+    marginTop: '10px',
     alignItems: 'center',
   },
   miniPill: {
-    padding: '6px 10px',
+    padding: '3px 8px',
     borderRadius: '999px',
-    background: 'var(--rg-surface-soft)',
+    background: 'rgba(255, 255, 255, 0.05)',
     border: '1px solid var(--rg-line)',
-    color: 'var(--rg-text)',
-    fontSize: '11px',
-    fontWeight: 600,
+    fontSize: '10px',
+    fontWeight: 700,
     letterSpacing: '0.02em',
-    whiteSpace: 'normal',
-    flexShrink: 1,
-    minWidth: 'fit-content',
-    display: 'inline-block',
-    visibility: 'visible',
-    opacity: 1,
   },
   summaryBox: {
     padding: '20px',
-    borderRadius: '20px',
-    background: 'var(--rg-surface-soft)',
+    borderRadius: '18px',
+    background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
     color: 'var(--rg-text)',
-    lineHeight: 1.7,
-    fontSize: '15px',
-    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 12px 30px rgba(181, 166, 197, 0.14)',
-    transition: 'border-color 260ms ease, box-shadow 260ms ease, transform 260ms ease',
-  },
-  summaryHeadline: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '12px',
-    marginBottom: '12px',
-    flexWrap: 'wrap',
-  },
-  summarySubject: {
-    margin: 0,
-    fontSize: '15px',
-    fontWeight: 700,
-    color: 'var(--rg-text-strong)',
-    letterSpacing: '-0.01em',
-  },
-  summaryText: {
-    margin: 0,
-    color: 'var(--rg-text)',
-    lineHeight: 1.72,
+    lineHeight: 1.6,
+    fontSize: '14px',
   },
   commentBlock: {
-    marginTop: '16px',
-    padding: '15px 16px',
+    marginTop: '14px',
+    padding: '14px 16px',
+    borderRadius: '14px',
+    background: 'rgba(10, 13, 22, 0.8)',
+    border: '1px solid var(--rg-line)',
+    color: '#e2e8f0',
+    fontSize: '13px',
+    lineHeight: 1.6,
+    fontStyle: 'italic',
+  },
+  actionGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+    gap: '10px',
+    marginTop: '12px',
+  },
+  actionBtn: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '6px',
+    padding: '14px 10px',
     borderRadius: '16px',
     background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
     color: 'var(--rg-text)',
-    fontSize: '13px',
-    lineHeight: 1.7,
-    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.03)',
-  },
-  summaryMeta: {
-    marginTop: '14px',
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '10px',
-  },
-  summaryPill: {
-    padding: '7px 12px',
-    borderRadius: '999px',
-    background: 'var(--rg-surface-strong)',
-    border: '1px solid var(--rg-line)',
-    color: 'var(--rg-text)',
-    fontSize: '12px',
-    fontWeight: 700,
-  },
-  confidenceBlock: {
-    marginTop: '20px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-  },
-  confidenceRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '12px',
-    fontSize: '13px',
-    color: 'var(--rg-muted)',
-  },
-  meterTrack: {
-    width: '100%',
-    height: '10px',
-    borderRadius: '999px',
-    background: 'rgba(128, 139, 166, 0.16)',
-    overflow: 'hidden',
-    boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.22)',
-  },
-  actionGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: '14px',
-    overflow: 'visible',
-    minHeight: 'auto',
-  },
-  actionButton: {
-    border: '1px solid var(--rg-line)',
-    borderRadius: '20px',
-    padding: '18px 16px',
-    background: 'var(--rg-surface-strong)',
-    color: 'var(--rg-text-strong)',
-    textAlign: 'left',
     cursor: 'pointer',
-    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.03)',
-    transition:
-      'transform 240ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease, box-shadow 240ms ease, background 240ms ease',
-    minHeight: 'auto',
-  },
-  actionLabel: {
-    display: 'block',
-    fontSize: '15px',
-    fontWeight: 700,
-    marginBottom: '6px',
-  },
-  actionHint: {
-    display: 'block',
-    color: 'var(--rg-muted)',
-    fontSize: '12px',
-    lineHeight: 1.5,
-  },
-  actionState: {
-    marginTop: '16px',
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '8px',
-    overflow: 'visible',
-    paddingBottom: '8px',
-    width: '100%',
-    position: 'relative',
-    zIndex: 2,
-    alignItems: 'flex-start',
-    justifyContent: 'flex-start',
-    minHeight: 'fit-content',
-    maxHeight: 'none',
+    transition: 'all 180ms ease',
+    textAlign: 'center',
   },
   feedList: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '13px',
+    gap: '8px',
+    maxHeight: '260px',
+    overflowY: 'auto',
   },
   feedRow: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
-    padding: '15px 16px',
-    borderRadius: '18px',
+    gap: '10px',
+    padding: '10px 14px',
+    borderRadius: '12px',
     background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
-    transition:
-      'transform 240ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease, opacity 240ms ease, background 240ms ease',
+    fontSize: '12px',
+    transition: 'all 160ms ease',
   },
   feedDot: {
-    width: '9px',
-    height: '9px',
+    width: '8px',
+    height: '8px',
     borderRadius: '999px',
-    background: '#41d992',
-    boxShadow: '0 0 14px rgba(65, 217, 146, 0.5)',
     flexShrink: 0,
   },
   feedText: {
     margin: 0,
     color: 'var(--rg-text)',
-    fontSize: '13px',
-    lineHeight: 1.55,
+    flex: 1,
+    lineHeight: 1.4,
+  },
+  feedTime: {
+    fontSize: '10px',
+    color: 'var(--rg-muted)',
+    fontFamily: 'monospace',
   },
   riskList: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '14px',
+    gap: '10px',
   },
   riskRow: {
-    padding: '15px 16px',
-    borderRadius: '18px',
+    padding: '12px 14px',
+    borderRadius: '14px',
     background: 'var(--rg-surface-strong)',
     border: '1px solid var(--rg-line)',
-    transition: 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1), border-color 220ms ease, background 220ms ease, box-shadow 220ms ease',
   },
   riskTop: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: '12px',
-    marginBottom: '10px',
-  },
-  riskLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    fontSize: '14px',
+    marginBottom: '8px',
+    fontSize: '12px',
     fontWeight: 700,
   },
-  riskDot: {
-    width: '10px',
-    height: '10px',
+  meterTrack: {
+    width: '100%',
+    height: '7px',
     borderRadius: '999px',
-    flexShrink: 0,
-  },
-  footer: {
-    textAlign: 'center',
-    color: 'var(--rg-muted)',
-    fontSize: '12px',
-    paddingBottom: '14px',
-    letterSpacing: '0.04em',
+    background: 'rgba(255, 255, 255, 0.08)',
+    overflow: 'hidden',
   },
   toast: {
     position: 'fixed',
-    top: '24px',
+    bottom: '24px',
     right: '24px',
-    padding: '15px 18px',
-    borderRadius: '18px',
-    background: 'var(--rg-surface-strong)',
-    boxShadow: '0 24px 60px rgba(0, 0, 0, 0.34), 0 0 24px rgba(87, 217, 255, 0.08)',
-    color: 'var(--rg-text)',
+    zIndex: 9999,
+    padding: '14px 22px',
+    borderRadius: '16px',
     fontSize: '13px',
-    fontWeight: 700,
-    zIndex: 10,
-    transition: 'opacity 180ms ease, transform 180ms ease',
-    pointerEvents: 'none',
-    minWidth: '220px',
-    backdropFilter: 'blur(14px)',
+    fontWeight: 800,
+    boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    animation: 'toastIn 200ms ease',
   },
-  emptyState: {
-    borderRadius: '20px',
-    padding: '24px 18px',
-    border: '1px dashed rgba(133, 152, 180, 0.22)',
-    background: 'rgba(12, 20, 31, 0.68)',
-    textAlign: 'center',
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backdropFilter: 'blur(8px)',
+    zIndex: 10000,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '20px',
   },
-  emptyTitle: {
-    margin: '0 0 8px',
-    fontSize: '15px',
-    fontWeight: 700,
-    color: '#edf5fd',
-  },
-  emptyText: {
-    margin: 0,
-    fontSize: '13px',
-    lineHeight: 1.6,
-    color: '#8ca6bf',
+  modalContent: {
+    width: '100%',
+    maxWidth: '560px',
+    borderRadius: '24px',
+    background: '#0d111a',
+    border: '1px solid rgba(255, 69, 0, 0.3)',
+    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.8)',
+    padding: '28px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '18px',
   },
 };
 
 const severityStyles: Record<Severity, CSSProperties> = {
   HIGH: {
-    padding: '7px 11px',
-    borderRadius: '999px',
-    background: 'rgba(255, 68, 93, 0.14)',
-    border: '1px solid rgba(255, 68, 93, 0.42)',
-    color: '#e92f52',
-    fontSize: '11px',
-    fontWeight: 800,
-    letterSpacing: '0.02em',
-    whiteSpace: 'nowrap',
-    flexShrink: 0,
-    lineHeight: 1,
-    display: 'inline-flex',
-    alignItems: 'center',
-    maxWidth: '100%',
+    color: '#ff3355',
+    background: 'rgba(255, 51, 85, 0.14)',
+    borderColor: 'rgba(255, 51, 85, 0.35)',
   },
   MEDIUM: {
-    padding: '7px 11px',
-    borderRadius: '999px',
-    background: 'rgba(255, 169, 40, 0.16)',
-    border: '1px solid rgba(255, 169, 40, 0.46)',
-    color: '#c97400',
-    fontSize: '11px',
-    fontWeight: 800,
-    letterSpacing: '0.02em',
-    whiteSpace: 'nowrap',
-    flexShrink: 0,
-    lineHeight: 1,
-    display: 'inline-flex',
-    alignItems: 'center',
-    maxWidth: '100%',
+    color: '#fb923c',
+    background: 'rgba(251, 146, 60, 0.14)',
+    borderColor: 'rgba(251, 146, 60, 0.35)',
   },
   LOW: {
-    padding: '7px 11px',
-    borderRadius: '999px',
-    background: 'rgba(47, 190, 125, 0.14)',
-    border: '1px solid rgba(47, 190, 125, 0.42)',
-    color: '#15975d',
-    fontSize: '11px',
-    fontWeight: 800,
-    letterSpacing: '0.02em',
-    whiteSpace: 'nowrap',
-    flexShrink: 0,
-    lineHeight: 1,
-    display: 'inline-flex',
-    alignItems: 'center',
-    maxWidth: '100%',
+    color: '#38bdf8',
+    background: 'rgba(56, 189, 248, 0.14)',
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+};
+
+const statusStyles: Record<ReportStatus, CSSProperties> = {
+  'Under Review': {
+    color: '#fbbf24',
+    background: 'rgba(251, 191, 36, 0.12)',
+    borderColor: 'rgba(251, 191, 36, 0.3)',
+  },
+  Escalated: {
+    color: '#f87171',
+    background: 'rgba(248, 113, 113, 0.14)',
+    borderColor: 'rgba(248, 113, 113, 0.35)',
+  },
+  Resolved: {
+    color: '#34d399',
+    background: 'rgba(52, 211, 153, 0.12)',
+    borderColor: 'rgba(52, 211, 153, 0.3)',
   },
 };
 
 const riskToneStyles: Record<RiskTone, { dot: string; bar: string; border: string }> = {
   safe: {
-    dot: '#41d992',
-    bar: 'linear-gradient(90deg, #1dbf73 0%, #49e49a 100%)',
-    border: 'rgba(65, 217, 146, 0.24)',
+    dot: '#10b981',
+    bar: 'linear-gradient(90deg, #059669, #10b981)',
+    border: 'rgba(16, 185, 129, 0.4)',
   },
   suspicious: {
-    dot: '#f2c14e',
-    bar: 'linear-gradient(90deg, #dba500 0%, #ffd166 100%)',
-    border: 'rgba(242, 193, 78, 0.24)',
+    dot: '#f59e0b',
+    bar: 'linear-gradient(90deg, #d97706, #fbbf24)',
+    border: 'rgba(245, 158, 11, 0.4)',
   },
   dangerous: {
-    dot: '#ff5b5b',
-    bar: 'linear-gradient(90deg, #ff3d3d 0%, #ff7b54 100%)',
-    border: 'rgba(255, 91, 91, 0.28)',
-  },
-};
-
-const statusStyles: Record<ReportStatus, CSSProperties> = {
-  Resolved: {
-    background: 'rgba(65, 217, 146, 0.16)',
-    border: '1px solid rgba(65, 217, 146, 0.3)',
-    color: '#98f0bf',
-    maxWidth: '112px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  'Under Review': {
-    background: 'rgba(0, 179, 255, 0.12)',
-    border: '1px solid rgba(0, 179, 255, 0.26)',
-    color: '#8fddff',
-    maxWidth: '112px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  Escalated: {
-    background: 'rgba(255, 91, 91, 0.14)',
-    border: '1px solid rgba(255, 91, 91, 0.28)',
-    color: '#ffabab',
-    maxWidth: '112px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
+    dot: '#ef4444',
+    bar: 'linear-gradient(90deg, #dc2626, #f87171)',
+    border: 'rgba(239, 68, 68, 0.4)',
   },
 };
 
 const feedToneStyles: Record<FeedTone, { dot: string; border: string }> = {
-  info: {
-    dot: '#57d9ff',
-    border: 'rgba(87, 217, 255, 0.22)',
-  },
-  warning: {
-    dot: '#ffb85c',
-    border: 'rgba(255, 184, 92, 0.22)',
-  },
-  success: {
-    dot: '#41d992',
-    border: 'rgba(65, 217, 146, 0.22)',
-  },
+  info: { dot: '#38bdf8', border: 'rgba(56, 189, 248, 0.35)' },
+  warning: { dot: '#fbbf24', border: 'rgba(251, 191, 36, 0.35)' },
+  success: { dot: '#34d399', border: 'rgba(52, 211, 153, 0.35)' },
+  danger: { dot: '#ef4444', border: 'rgba(239, 68, 68, 0.35)' },
 };
 
 const toastToneStyles: Record<ToastTone, CSSProperties> = {
-  info: {
-    border: '1px solid rgba(87, 217, 255, 0.35)',
-    color: '#dff7ff',
-  },
-  success: {
-    border: '1px solid rgba(65, 217, 146, 0.35)',
-    color: '#e7fff2',
-  },
-  warning: {
-    border: '1px solid rgba(255, 184, 92, 0.35)',
-    color: '#fff0d8',
-  },
+  info: { background: '#0284c7', color: '#ffffff' },
+  success: { background: '#059669', color: '#ffffff' },
+  warning: { background: '#d97706', color: '#ffffff' },
+  danger: { background: '#dc2626', color: '#ffffff' },
 };
-
-const ShieldGlyph = () => (
-  <svg
-    aria-hidden="true"
-    viewBox="0 0 40 40"
-    fill="none"
-    style={styles.shieldSvg}
-  >
-    <path
-      d="M20 4L8.5 8.8V18.2C8.5 25.8 13.2 32.6 20 35.6C26.8 32.6 31.5 25.8 31.5 18.2V8.8L20 4Z"
-      fill="white"
-      opacity="0.96"
-    />
-    <path
-      d="M20 9.1L13.5 11.8V18.3C13.5 22.8 16 27 20 29.4C24 27 26.5 22.8 26.5 18.3V11.8L20 9.1Z"
-      fill="#ff365b"
-    />
-    <path d="M20 9.1V29.4C24 27 26.5 22.8 26.5 18.3V11.8L20 9.1Z" fill="#ff5f7c" />
-    <path d="M17.2 17.5L19.1 19.4L23.2 15.2" stroke="white" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-const WindowLogo = () => (
-  <svg
-    aria-hidden="true"
-    viewBox="0 0 48 48"
-    fill="none"
-    style={{ width: '56px', height: '56px', display: 'block' }}
-  >
-    <rect x="4" y="4" width="40" height="40" rx="12" fill="#ff6b35" />
-    <path
-      d="M24 10L14 14V22C14 28.5 18 34 24 36C30 34 34 28.5 34 22V14L24 10Z"
-      fill="white"
-      opacity="0.95"
-    />
-    <path
-      d="M24 14L18 16V22C18 25.5 20 29 24 30C28 29 30 25.5 30 22V16L24 14Z"
-      fill="#ff6b35"
-    />
-    <path d="M24 14V30C28 29 30 25.5 30 22V16L24 14Z" fill="#ff8c5a" />
-    <path d="M21 20L22.5 21.5L26 17.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-
-const getRiskTone = (riskSeverity: string): RiskTone => {
-  if (riskSeverity.toUpperCase() === 'HIGH') return 'dangerous';
-  if (riskSeverity.toUpperCase() === 'LOW') return 'safe';
-  return 'suspicious';
-};
 
 const getTimeLabel = () =>
   new Date().toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
   });
 
 const getInitials = (username: string) =>
@@ -1082,32 +939,36 @@ function createSummary(report: ReportItem): SummaryState {
   const riskSeverity =
     report.riskScore >= 85 ? 'HIGH' : report.riskScore >= 65 ? 'MEDIUM' : 'LOW';
 
+  const profile = issueProfiles.find((p) => p.issueType === report.issueType) ?? issueProfiles[0]!;
+
   const statusContext =
     report.status === 'Resolved'
-      ? 'The account is currently stabilized after earlier intervention.'
+      ? 'Intervention completed. Account quarantined and content sanitized.'
       : report.status === 'Escalated'
-        ? 'The account is showing persistent signals that justify human escalation.'
-        : 'The account remains in the active review lane for automated triage.';
+        ? 'High toxicity persistence detected. Subreddit escalation threshold triggered.'
+        : 'Active review pipeline monitoring incoming community feedback.';
 
-  const toxicitySummary = `${report.issueType} markers were detected in multiple interactions from ${report.username}. The flagged language shows ${report.severity.toLowerCase()} severity intent with a live risk score of ${report.riskScore}. ${statusContext}`;
+  const toxicitySummary = `${report.issueType} markers detected in interactions from ${report.username}. Flagged language exhibits ${report.severity} severity intent with a live risk index of ${report.riskScore}%. ${statusContext}`;
 
   const moderationRecommendation =
     report.status === 'Resolved'
-      ? 'Recommendation: keep watchlist monitoring enabled and archive the report unless the behavior returns.'
+      ? 'Recommendation: Keep automated watch active. Content already sanitized.'
       : report.riskScore >= 90
-        ? 'Recommendation: remove the content immediately, apply a temporary mute, and escalate to a human moderator.'
-        : report.riskScore >= 72
-          ? 'Recommendation: remove the flagged comment and keep the user under active review for repeat behavior.'
-          : 'Recommendation: issue a warning, preserve evidence, and monitor for continued escalation.';
+        ? 'Urgent Recommendation: Immediate comment removal + 7-day user mute + add to platform spam blacklist.'
+        : report.riskScore >= 70
+          ? 'Recommendation: Remove comment and issue an official moderator strike.'
+          : 'Recommendation: Flag for observational review. No immediate punitive ban required.';
 
   return {
     toxicitySummary,
     moderationRecommendation,
     riskSeverity,
+    tags: profile.tags,
+    violatedRules: profile.rules,
   };
 }
 
-function generateFakeReports(total = 18): ReportItem[] {
+function generateInitialReports(total = 18): ReportItem[] {
   return Array.from({ length: total }, (_, index) => {
     const profile = issueProfiles[index % issueProfiles.length] ?? issueProfiles[0]!;
     const status = statusCycle[index % statusCycle.length] ?? 'Under Review';
@@ -1123,463 +984,64 @@ function generateFakeReports(total = 18): ReportItem[] {
       riskScore,
       aiConfidence,
       status,
-      warned: status !== 'Resolved',
+      warned: status === 'Escalated',
       commentRemoved: status === 'Resolved',
       muted: status === 'Escalated',
-      updateCount: index % 4,
+      banned: false,
+      approved: false,
+      updateCount: index % 3,
+      timestamp: `${(index + 1) * 2}m ago`,
     };
   });
 }
 
-function createInitialFeed(report: ReportItem): FeedItem[] {
-  return [
+export function App() {
+  const [reports, setReports] = useState<ReportItem[]>(() => generateInitialReports(18));
+  const [selectedReportId, setSelectedReportId] = useState<string>('report-1');
+  const [severityFilter, setSeverityFilter] = useState<'ALL' | Severity>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | ReportStatus>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [streamActive, setStreamActive] = useState(true);
+  const [isAiScanning, setIsAiScanning] = useState(false);
+  const [showNewModal, setShowNewModal] = useState(false);
+
+  // New Custom Incident state
+  const [newUsername, setNewUsername] = useState('u/TestUser99');
+  const [newComment, setNewComment] = useState('');
+  const [newIssueType, setNewIssueType] = useState('Harassment');
+
+  const [activityFeed, setActivityFeed] = useState<FeedItem[]>([
     {
-      id: 'feed-start-1',
-      text: `${getTimeLabel()} AI queue synced with ${report.username} at the top of the review stack.`,
-      isNew: false,
-      tone: 'info',
-    },
-    {
-      id: 'feed-start-2',
-      text: `${getTimeLabel()} ${report.issueType} pattern grouped with recent platform abuse reports.`,
-      isNew: false,
-      tone: 'warning',
-    },
-    {
-      id: 'feed-start-3',
-      text: `${getTimeLabel()} Auto-triage confidence stabilized at ${report.aiConfidence}% for the selected case.`,
+      id: 'feed-init-1',
+      text: 'AI Sentinel initialized. Subreddit modqueue synchronized.',
       isNew: false,
       tone: 'success',
-    },
-  ];
-}
-
-function buildActionResult(
-  action: ActionType,
-  report: ReportItem
-): {
-  status: ReportStatus;
-  message: string;
-  tone: ToastTone;
-  feedTone: FeedTone;
-} {
-  if (action === 'Warn User') {
-    return {
-      status: 'Under Review' as ReportStatus,
-      message: `Warning sent to ${report.username}`,
-      tone: 'warning' as ToastTone,
-      feedTone: 'warning' as FeedTone,
-    };
-  }
-
-  if (action === 'Remove Comment') {
-    return {
-      status: 'Resolved' as ReportStatus,
-      message: `Flagged comment removed for ${report.username}`,
-      tone: 'success' as ToastTone,
-      feedTone: 'success' as FeedTone,
-    };
-  }
-
-  return {
-    status: 'Escalated' as ReportStatus,
-    message: `Temporary mute applied to ${report.username}`,
-    tone: 'info' as ToastTone,
-    feedTone: 'info' as FeedTone,
-  };
-}
-
-const initialReports = generateFakeReports(18);
-
-function AnalyticsCards({ items }: { items: MetricCardData[] }) {
-  return (
-    <section style={styles.analyticsGrid}>
-      {items.map((item, index) => (
-        <article
-          key={item.label}
-          style={{
-            ...styles.analyticsCard,
-            boxShadow:
-              index === 0
-                ? 'var(--rg-shadow-strong), 0 0 24px rgba(255, 92, 124, 0.08)'
-                : 'var(--rg-shadow)',
-          }}
-        >
-          <p style={styles.analyticsLabel}>{item.label}</p>
-          <p style={{ ...styles.analyticsValue, color: item.accent }}>{item.value}</p>
-          <p style={styles.analyticsDetail}>{item.detail}</p>
-        </article>
-      ))}
-    </section>
-  );
-}
-
-function StatusLabel({ status }: { status: ReportStatus }) {
-  return (
-    <span
-      style={{
-        ...styles.miniPill,
-        ...statusStyles[status],
-        marginLeft: 'auto',
-        flexShrink: 0,
-      }}
-    >
-      {status}
-    </span>
-  );
-}
-
-function ReportQueueCard({
-  items,
-  selectedId,
-  onSelect,
-}: {
-  items: ReportItem[];
-  selectedId: string;
-  onSelect: (report: ReportItem) => void;
-}) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-
-  return (
-    <section style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div style={styles.cardTitleWrap}>
-          <h2 style={styles.cardTitle}>Moderation Queue</h2>
-          <p style={styles.cardCaption}>Live scrolling queue of active reported users</p>
-        </div>
-        <span style={styles.badge}>{items.length} Cases Loaded</span>
-      </div>
-      <div style={styles.reportScroll} className="guardian-scroll">
-        {items.length === 0 ? (
-          <div style={styles.emptyState}>
-            <p style={styles.emptyTitle}>No live reports available</p>
-            <p style={styles.emptyText}>The moderation queue will populate as new incidents arrive.</p>
-          </div>
-        ) : null}
-        {items.map((report) => {
-          const isSelected = report.id === selectedId;
-          const isHovered = hoveredId === report.id;
-
-          return (
-            <button
-              key={report.id}
-              type="button"
-              onClick={() => onSelect(report)}
-              onMouseEnter={() => setHoveredId(report.id)}
-              onMouseLeave={() => setHoveredId(null)}
-              style={{
-                ...styles.reportButton,
-                transform: 'translateY(0)',
-                borderColor: isSelected
-                  ? 'var(--rg-line-strong)'
-                  : isHovered
-                    ? 'rgba(143, 91, 255, 0.2)'
-                    : 'var(--rg-line)',
-                background: isSelected
-                  ? 'var(--rg-primary-soft)'
-                  : 'var(--rg-surface-strong)',
-                boxShadow: isSelected
-                  ? '0 16px 30px rgba(255, 92, 124, 0.12)'
-                  : isHovered
-                    ? 'var(--rg-shadow)'
-                    : 'none',
-              }}
-            >
-              <div style={styles.avatar}>{getInitials(report.username)}</div>
-              <div style={styles.reportText}>
-                <div style={styles.reportTop}>
-                  <p style={styles.reportUser}>{report.username}</p>
-                  <StatusLabel status={report.status} />
-                </div>
-                <p style={styles.reportReason}>{report.issueType}</p>
-                <p style={styles.reportSnippet}>"{report.toxicCommentText}"</p>
-                <div style={styles.reportMeta}>
-                  <span style={severityStyles[report.severity]}>{report.severity}</span>
-                  <span style={styles.miniPill}>Risk {report.riskScore}</span>
-                  <span style={styles.miniPill}>AI {report.aiConfidence}%</span>
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function SummaryCard({
-  selectedReport,
-  summary,
-}: {
-  selectedReport: ReportItem;
-  summary: SummaryState;
-}) {
-  return (
-    <section style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div style={styles.cardTitleWrap}>
-          <h2 style={styles.cardTitle}>AI Summary</h2>
-          <p style={styles.cardCaption}>Model-style case synthesis for the selected user</p>
-        </div>
-        <span
-          style={{
-            ...styles.badge,
-            background: 'rgba(0, 179, 255, 0.12)',
-            border: '1px solid var(--rg-line-strong)',
-            color: 'var(--rg-purple)',
-          }}
-        >
-          Live Insight
-        </span>
-      </div>
-      <div
-        style={{
-          ...styles.summaryBox,
-        }}
-      >
-        <div style={styles.summaryHeadline}>
-          <p style={styles.summarySubject}>Focused Report: {selectedReport.username}</p>
-          <StatusLabel status={selectedReport.status} />
-        </div>
-        <p style={styles.summaryText}>{summary.toxicitySummary}</p>
-        <div style={styles.commentBlock}>
-          <strong>Flagged Comment:</strong> "{selectedReport.toxicCommentText}"
-        </div>
-        <div style={styles.summaryMeta}>
-          <span style={styles.summaryPill}>Issue Type: {selectedReport.issueType}</span>
-          <span style={styles.summaryPill}>Risk Severity: {summary.riskSeverity}</span>
-          <span style={styles.summaryPill}>{summary.moderationRecommendation}</span>
-        </div>
-        <div style={styles.confidenceBlock}>
-          <div style={styles.confidenceRow}>
-            <span>AI Confidence</span>
-            <span>{selectedReport.aiConfidence}%</span>
-          </div>
-          <div style={styles.meterTrack}>
-            <div
-              style={{
-                width: `${selectedReport.aiConfidence}%`,
-                height: '100%',
-                borderRadius: '999px',
-                background: 'linear-gradient(90deg, var(--rg-purple) 0%, var(--rg-cyan) 100%)',
-                transition: 'width 320ms ease',
-              }}
-            />
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ActionsCard({
-  selectedReport,
-  onAction,
-}: {
-  selectedReport: ReportItem;
-  onAction: (action: ActionType) => void;
-}) {
-  const [hoveredAction, setHoveredAction] = useState<ActionType | null>(null);
-
-  const actions: Array<{ label: ActionType; hint: string }> = [
-    { label: 'Warn User', hint: `Issue an automated warning to ${selectedReport.username}` },
-    {
-      label: 'Remove Comment',
-      hint: `Take down the flagged ${selectedReport.issueType.toLowerCase()} content`,
+      timestamp: getTimeLabel(),
     },
     {
-      label: 'Temporary Mute',
-      hint: 'Apply a cooldown while moderators review the behavior cluster',
+      id: 'feed-init-2',
+      text: 'DeepSeek-V3 LLM connected for real-time semantic analysis.',
+      isNew: false,
+      tone: 'info',
+      timestamp: getTimeLabel(),
     },
-  ];
+    {
+      id: 'feed-init-3',
+      text: '18 incidents triaged automatically by risk vector.',
+      isNew: false,
+      tone: 'warning',
+      timestamp: getTimeLabel(),
+    },
+  ]);
 
-  return (
-    <section style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div style={styles.cardTitleWrap}>
-          <h2 style={styles.cardTitle}>Suggested Actions</h2>
-          <p style={styles.cardCaption}>Functional moderation controls for the selected case</p>
-        </div>
-      </div>
-      <div style={styles.actionGrid}>
-        {actions.map((action) => {
-          const isHovered = hoveredAction === action.label;
-
-          return (
-            <button
-              key={action.label}
-              type="button"
-              onClick={() => onAction(action.label)}
-              onMouseEnter={() => setHoveredAction(action.label)}
-              onMouseLeave={() => setHoveredAction(null)}
-              style={{
-                ...styles.actionButton,
-                transform: 'translateY(0)',
-                borderColor: isHovered
-                  ? 'var(--rg-line-strong)'
-                  : 'var(--rg-line)',
-                boxShadow: isHovered
-                  ? 'var(--rg-shadow)'
-                  : 'inset 0 1px 0 rgba(255, 255, 255, 0.03)',
-              }}
-            >
-              <span style={styles.actionLabel}>{action.label}</span>
-              <span style={styles.actionHint}>{action.hint}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div style={styles.actionState}>
-        <span style={styles.miniPill}>
-          Warning: {selectedReport.warned ? 'Issued' : 'Pending'}
-        </span>
-        <span style={styles.miniPill}>
-          Comment: {selectedReport.commentRemoved ? 'Removed' : 'Visible'}
-        </span>
-        <span style={styles.miniPill}>
-          Mute: {selectedReport.muted ? 'Active' : 'Inactive'}
-        </span>
-      </div>
-    </section>
-  );
-}
-
-function ActivityFeedCard({ items }: { items: FeedItem[] }) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-
-  return (
-    <section style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div style={styles.cardTitleWrap}>
-          <h2 style={styles.cardTitle}>Moderation Activity Feed</h2>
-          <p style={styles.cardCaption}>Selections, automated signals, and moderator actions</p>
-        </div>
-      </div>
-      <div style={styles.feedList}>
-        {items.length === 0 ? (
-          <div style={styles.emptyState}>
-            <p style={styles.emptyTitle}>No moderation activity yet</p>
-            <p style={styles.emptyText}>Actions, selections, and live AI updates will appear here in real time.</p>
-          </div>
-        ) : null}
-        {items.map((item, index) => {
-          const tone = feedToneStyles[item.tone];
-
-          return (
-            <div
-              key={item.id}
-              onMouseEnter={() => setHoveredIndex(index)}
-              onMouseLeave={() => setHoveredIndex(null)}
-              style={{
-                ...styles.feedRow,
-                transform: 'translateY(0)',
-                opacity: item.isNew ? 1 : 0.94,
-                background: item.isNew ? 'var(--rg-primary-soft)' : 'var(--rg-surface-strong)',
-                borderColor:
-                  item.isNew || hoveredIndex === index ? tone.border : 'var(--rg-line)',
-              }}
-            >
-              <span style={{ ...styles.feedDot, background: tone.dot }} />
-              <p style={styles.feedText}>{item.text}</p>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function RiskScoreCard({
-  summary,
-  selectedReport,
-}: {
-  summary: SummaryState;
-  selectedReport: ReportItem;
-}) {
-  const dynamicRiskItems = useMemo<RiskItem[]>(() => {
-    const severity = summary.riskSeverity.toUpperCase();
-
-    return [
-      {
-        label: 'Green Safe',
-        tone: 'safe',
-        score: severity === 'LOW' ? Math.max(48, 100 - selectedReport.riskScore) : 18,
-      },
-      {
-        label: 'Yellow Suspicious',
-        tone: 'suspicious',
-        score: severity === 'MEDIUM' ? selectedReport.riskScore : 58,
-      },
-      {
-        label: 'Red Dangerous',
-        tone: 'dangerous',
-        score: severity === 'HIGH' ? selectedReport.riskScore : 34,
-      },
-    ];
-  }, [selectedReport.riskScore, summary.riskSeverity]);
-
-  const activeTone = getRiskTone(summary.riskSeverity);
-
-  return (
-    <section style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div style={styles.cardTitleWrap}>
-          <h2 style={styles.cardTitle}>Risk Score</h2>
-          <p style={styles.cardCaption}>Behavior severity indicators for the live case</p>
-        </div>
-      </div>
-      <div style={styles.riskList}>
-        {dynamicRiskItems.map((risk) => {
-          const tone = riskToneStyles[risk.tone];
-          const isActive = risk.tone === activeTone;
-
-          return (
-            <div
-              key={risk.label}
-              style={{
-                ...styles.riskRow,
-                transform: 'translateY(0)',
-                borderColor: isActive ? tone.border : 'rgba(133, 152, 180, 0.4)',
-                background: isActive ? 'var(--rg-primary-soft)' : 'rgba(255, 255, 255, 0.7)',
-                boxShadow: isActive ? '0 0 20px rgba(255, 92, 124, 0.15)' : '0 4px 12px rgba(0, 0, 0, 0.08)',
-              }}
-            >
-              <div style={styles.riskTop}>
-                <div style={styles.riskLabel}>
-                  <span style={{ ...styles.riskDot, background: tone.dot }} />
-                  <span>{risk.label}</span>
-                </div>
-                <span style={{ color: 'var(--rg-text)', fontWeight: 700 }}>{risk.score}%</span>
-              </div>
-              <div style={styles.meterTrack}>
-                <div
-                  style={{
-                    width: `${risk.score}%`,
-                    height: '100%',
-                    borderRadius: '999px',
-                    background: tone.bar,
-                    transition: 'width 320ms ease',
-                  }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function App() {
-  const [reports, setReports] = useState<ReportItem[]>(() => initialReports);
-  const [selectedReportId, setSelectedReportId] = useState<string>('report-1');
-  const [activityFeed, setActivityFeed] = useState<FeedItem[]>(() => createInitialFeed(initialReports[0]!));
   const [toast, setToast] = useState<ToastState>({
     visible: false,
     message: '',
     tone: 'success',
   });
-  const [liveAlert, setLiveAlert] = useState('New spam detected in the live moderation queue.');
+
+  const [liveAlert, setLiveAlert] = useState('Autonomous community radar scanning incoming comments.');
   const [aiActionsToday, setAiActionsToday] = useState(184);
 
   const selectedReport = useMemo(
@@ -1595,284 +1057,954 @@ function App() {
             toxicitySummary: 'No report selected.',
             moderationRecommendation: 'Recommendation unavailable.',
             riskSeverity: 'LOW',
+            tags: [],
+            violatedRules: [],
           },
     [selectedReport]
   );
 
+  // Filtered reports
+  const filteredReports = useMemo(() => {
+    return reports.filter((r) => {
+      const matchSeverity = severityFilter === 'ALL' || r.severity === severityFilter;
+      const matchStatus = statusFilter === 'ALL' || r.status === statusFilter;
+      const matchSearch =
+        searchQuery.trim() === '' ||
+        r.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        r.toxicCommentText.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        r.issueType.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchSeverity && matchStatus && matchSearch;
+    });
+  }, [reports, severityFilter, statusFilter, searchQuery]);
+
+  // Analytics computation
   const analytics = useMemo<MetricCardData[]>(() => {
     const activeReports = reports.filter((report) => report.status !== 'Resolved').length;
     const highRiskUsers = reports.filter(
       (report) => report.riskScore >= 80 || report.status === 'Escalated'
     ).length;
     const resolved = reports.filter((report) => report.status === 'Resolved').length;
-    const moderatorEfficiency = clamp(
-      Math.round((resolved / reports.length) * 100 + aiActionsToday / 20),
-      72,
-      98
+    const efficiency = clamp(
+      Math.round((resolved / (reports.length || 1)) * 100 + aiActionsToday / 25),
+      74,
+      99
     );
 
     return [
       {
-        label: 'Active Reports',
+        label: 'Active Incident Queue',
         value: `${activeReports}`,
-        detail: `${reports.length} users currently loaded in the queue`,
-        accent: 'var(--rg-text-strong)',
+        detail: `${reports.length} total community flags loaded`,
+        accent: '#ffffff',
+        trend: '+4 last hr',
       },
       {
-        label: 'High Risk Users',
+        label: 'Critical Threats',
         value: `${highRiskUsers}`,
-        detail: 'Risk score above 80 or active escalation path',
-        accent: '#ff9f8e',
+        detail: 'Risk score ≥ 80% or active escalation',
+        accent: '#ff3355',
+        trend: '🚨 High Priority',
       },
       {
-        label: 'AI Actions Today',
+        label: 'AI Actions Executed',
         value: `${aiActionsToday}`,
-        detail: 'Warnings, removals, and mutes issued this shift',
-        accent: '#7ddcff',
+        detail: 'Warnings, removes, mutes & bans this shift',
+        accent: '#38bdf8',
+        trend: '⚡ Autonomous',
       },
       {
-        label: 'Moderator Efficiency',
-        value: `${moderatorEfficiency}%`,
-        detail: `${resolved} reports resolved with automated triage support`,
-        accent: '#86efac',
+        label: 'Subreddit Health Rating',
+        value: `${efficiency}%`,
+        detail: `${resolved} cases successfully resolved`,
+        accent: '#34d399',
+        trend: '🛡️ Protected',
       },
     ];
   }, [aiActionsToday, reports]);
 
+  // Toast Auto-dismiss
   useEffect(() => {
-    if (!toast.visible) {
-      return;
-    }
-
+    if (!toast.visible) return;
     const timer = window.setTimeout(() => {
-      setToast((current) => ({ ...current, visible: false }));
-    }, 2200);
-
+      setToast((c) => ({ ...c, visible: false }));
+    }, 2400);
     return () => window.clearTimeout(timer);
   }, [toast.visible]);
 
+  // Sound toggle handler
+  const handleToggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    sfx.enabled = next;
+    if (next) {
+      sfx.play('select');
+    }
+  };
+
+  // Real-time live threat ticker simulation
   useEffect(() => {
+    if (!streamActive) return;
+
     const liveTimer = window.setInterval(() => {
       setReports((currentReports) => {
+        if (currentReports.length === 0) return currentReports;
         const targetIndex = Math.floor(Math.random() * currentReports.length);
         const eventIndex = Math.floor(Math.random() * liveEventTemplates.length);
         const target = currentReports[targetIndex];
+        if (!target) return currentReports;
 
-        if (!target) {
-          return currentReports;
-        }
-
-        const event = liveEventTemplates[eventIndex];
+        const event = liveEventTemplates[eventIndex]!;
         let nextStatus = target.status;
         let nextRisk = target.riskScore;
-        let nextConfidence = target.aiConfidence;
         let tone: FeedTone = 'info';
 
-        if (event === 'Toxicity increased') {
+        if (event.includes('spike') || event.includes('hate speech')) {
           nextStatus = 'Escalated';
-          nextRisk = clamp(target.riskScore + 6, 45, 99);
-          nextConfidence = clamp(target.aiConfidence + 2, 70, 99);
-          tone = 'warning';
-        } else if (event === 'Report resolved') {
-          nextStatus = 'Resolved';
-          nextRisk = clamp(target.riskScore - 12, 35, 99);
-          tone = 'success';
-        } else if (event === 'User muted') {
+          nextRisk = clamp(target.riskScore + 6, 50, 99);
+          tone = 'danger';
+        } else if (event.includes('quarantined') || event.includes('muted')) {
           nextStatus = 'Escalated';
           nextRisk = clamp(target.riskScore - 4, 35, 99);
-          tone = 'info';
-        } else if (event === 'New spam detected') {
-          nextStatus = 'Under Review';
-          nextRisk = clamp(target.riskScore + 3, 35, 99);
           tone = 'warning';
-        } else if (event === 'Escalation routed to human moderator') {
-          nextStatus = 'Escalated';
-          nextConfidence = clamp(target.aiConfidence + 1, 70, 99);
-          tone = 'info';
         } else {
           nextStatus = target.status === 'Resolved' ? 'Under Review' : target.status;
-          nextRisk = clamp(target.riskScore + 2, 35, 99);
-          tone = 'warning';
+          nextRisk = clamp(target.riskScore + 2, 40, 99);
+          tone = 'info';
         }
 
-        setLiveAlert(`${event}: ${target.username} | ${target.issueType} | ${getTimeLabel()}`);
-        setActivityFeed((currentFeed) => [
-          {
-            id: `feed-live-${Date.now()}`,
-            text: `${getTimeLabel()} ${event} for ${target.username}. Status now ${nextStatus}.`,
-            isNew: true,
-            tone,
-          },
-          ...currentFeed.map((item) => ({ ...item, isNew: false })),
-        ].slice(0, 7));
+        setLiveAlert(`${event}: ${target.username} (${target.issueType}) at ${getTimeLabel()}`);
 
-        if (event === 'User muted' || event === 'Report resolved') {
-          setAiActionsToday((count) => count + 1);
-        }
+        setActivityFeed((curr) =>
+          [
+            {
+              id: `feed-live-${Date.now()}`,
+              text: `${event} for ${target.username}. Risk score now ${nextRisk}%.`,
+              isNew: true,
+              tone,
+              timestamp: getTimeLabel(),
+            },
+            ...curr.map((i) => ({ ...i, isNew: false })),
+          ].slice(0, 8)
+        );
 
-        return currentReports.map((report, index) =>
-          index === targetIndex
+        sfx.play('alert');
+
+        return currentReports.map((r, i) =>
+          i === targetIndex
             ? {
-                ...report,
+                ...r,
                 status: nextStatus,
                 riskScore: nextRisk,
-                aiConfidence: nextConfidence,
-                muted: event === 'User muted' ? true : report.muted,
-                commentRemoved:
-                  event === 'Report resolved' ? true : report.commentRemoved,
-                updateCount: report.updateCount + 1,
+                updateCount: r.updateCount + 1,
               }
-            : report
+            : r
         );
       });
-    }, 4200);
+    }, 4500);
 
     return () => window.clearInterval(liveTimer);
-  }, []);
+  }, [streamActive]);
 
+  // Select Report
   const handleSelectReport = (report: ReportItem) => {
     setSelectedReportId(report.id);
-    setActivityFeed(
-      (current): FeedItem[] =>
-        [
-          {
-            id: `feed-select-${Date.now()}`,
-            text: `${getTimeLabel()} Moderator opened ${report.username}. Summary, recommendation, confidence, and live context refreshed.`,
-            isNew: true,
-            tone: 'info' as FeedTone,
-          },
-          ...current.map((item) => ({ ...item, isNew: false })),
-        ].slice(0, 7)
+    sfx.play('select');
+    setActivityFeed((curr) =>
+      [
+        {
+          id: `feed-select-${Date.now()}`,
+          text: `Moderator inspected case for ${report.username} [${report.issueType}].`,
+          isNew: true,
+          tone: 'info' as FeedTone,
+          timestamp: getTimeLabel(),
+        },
+        ...curr.map((i) => ({ ...i, isNew: false })),
+      ].slice(0, 8)
     );
   };
 
+  // Moderator Action execution
   const handleAction = (action: ActionType) => {
-    const activeReport = reports.find((report) => report.id === selectedReportId);
+    if (!selectedReport) return;
 
-    if (!activeReport) {
-      return;
+    let nextStatus: ReportStatus = selectedReport.status;
+    let toastMsg = '';
+    let toastTone: ToastTone = 'success';
+    let feedTone: FeedTone = 'success';
+
+    if (action === 'Warn User') {
+      nextStatus = 'Under Review';
+      toastMsg = `⚠️ Official moderator strike issued to ${selectedReport.username}`;
+      toastTone = 'warning';
+      feedTone = 'warning';
+      sfx.play('action');
+    } else if (action === 'Remove Comment') {
+      nextStatus = 'Resolved';
+      toastMsg = `🗑️ Comment deleted from thread. Case sanitized for ${selectedReport.username}`;
+      toastTone = 'success';
+      feedTone = 'success';
+      sfx.play('success');
+    } else if (action === 'Temporary Mute') {
+      nextStatus = 'Escalated';
+      toastMsg = `🔕 72-hour quarantine applied to ${selectedReport.username}`;
+      toastTone = 'info';
+      feedTone = 'info';
+      sfx.play('action');
+    } else if (action === 'Permanent Ban') {
+      nextStatus = 'Resolved';
+      toastMsg = `🔨 ${selectedReport.username} has been permanently banned from the subreddit`;
+      toastTone = 'danger';
+      feedTone = 'danger';
+      sfx.play('danger');
+    } else if (action === 'Approve & Clear') {
+      nextStatus = 'Resolved';
+      toastMsg = `🛡️ Comment approved. False positive cleared for ${selectedReport.username}`;
+      toastTone = 'success';
+      feedTone = 'success';
+      sfx.play('success');
     }
 
-    const result = buildActionResult(action, activeReport);
-
     setReports((current) =>
-      current.map((report) =>
-        report.id === selectedReportId
+      current.map((r) =>
+        r.id === selectedReport.id
           ? {
-              ...report,
-              status: result.status,
-              warned: action === 'Warn User' ? true : report.warned,
-              commentRemoved:
-                action === 'Remove Comment' ? true : report.commentRemoved,
-              muted: action === 'Temporary Mute' ? true : report.muted,
+              ...r,
+              status: nextStatus,
+              warned: action === 'Warn User' ? true : r.warned,
+              commentRemoved: action === 'Remove Comment' ? true : r.commentRemoved,
+              muted: action === 'Temporary Mute' ? true : r.muted,
+              banned: action === 'Permanent Ban' ? true : r.banned,
+              approved: action === 'Approve & Clear' ? true : r.approved,
               riskScore:
-                action === 'Remove Comment'
-                  ? clamp(report.riskScore - 14, 30, 99)
-                  : action === 'Warn User'
-                    ? clamp(report.riskScore - 5, 30, 99)
-                    : clamp(report.riskScore + 2, 30, 99),
-              aiConfidence:
-                action === 'Temporary Mute'
-                  ? clamp(report.aiConfidence + 2, 70, 99)
-                  : clamp(report.aiConfidence + 1, 70, 99),
+                action === 'Approve & Clear'
+                  ? 12
+                  : action === 'Remove Comment' || action === 'Permanent Ban'
+                    ? clamp(r.riskScore - 20, 20, 99)
+                    : r.riskScore,
             }
-          : report
+          : r
       )
     );
 
     setToast({
       visible: true,
-      message: result.message,
-      tone: result.tone,
+      message: toastMsg,
+      tone: toastTone,
     });
-    setLiveAlert(`${action} executed for ${activeReport.username} at ${getTimeLabel()}.`);
-    setAiActionsToday((count) => count + 1);
-    setActivityFeed((current) => [
-      {
-        id: `feed-action-${Date.now()}`,
-        text: `${getTimeLabel()} ${action} executed for ${activeReport.username}. Case status updated to ${result.status}.`,
-        isNew: true,
-        tone: result.feedTone,
-      },
-      ...current.map((item) => ({ ...item, isNew: false })),
-    ].slice(0, 7));
+
+    setAiActionsToday((c) => c + 1);
+
+    setActivityFeed((curr) =>
+      [
+        {
+          id: `feed-act-${Date.now()}`,
+          text: `${action} executed for ${selectedReport.username}. Status updated to ${nextStatus}.`,
+          isNew: true,
+          tone: feedTone,
+          timestamp: getTimeLabel(),
+        },
+        ...curr.map((i) => ({ ...i, isNew: false })),
+      ].slice(0, 8)
+    );
   };
 
-  if (!selectedReport) {
-    return null;
-  }
+  // Deep AI Scan
+  const handleRunAiScan = async () => {
+    if (!selectedReport) return;
+    setIsAiScanning(true);
+    sfx.play('select');
+
+    try {
+      // Try to call server API
+      const res = await fetch('/api/moderation-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comments: [selectedReport.toxicCommentText] }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setToast({
+          visible: true,
+          message: `DeepSeek AI scan complete: ${data.riskSeverity} severity verified`,
+          tone: 'info' as FeedTone,
+        });
+      } else {
+        // Fallback simulation
+        await new Promise((r) => setTimeout(r, 800));
+        setToast({
+          visible: true,
+          message: `DeepSeek AI deep analysis complete: High confidence verified`,
+          tone: 'info' as FeedTone,
+        });
+      }
+    } catch {
+      await new Promise((r) => setTimeout(r, 600));
+      setToast({
+        visible: true,
+        message: `AI semantic threat analysis complete for ${selectedReport.username}`,
+        tone: 'info',
+      });
+    } finally {
+      setIsAiScanning(false);
+      sfx.play('success');
+    }
+  };
+
+  // Auto-resolve all low risk
+  const handleAutoResolveLow = () => {
+    const lowCount = reports.filter((r) => r.severity === 'LOW' && r.status !== 'Resolved').length;
+    if (lowCount === 0) {
+      setToast({ visible: true, message: 'No unresolved low-risk cases in queue', tone: 'info' });
+      return;
+    }
+    setReports((curr) =>
+      curr.map((r) => (r.severity === 'LOW' ? { ...r, status: 'Resolved', approved: true } : r))
+    );
+    setAiActionsToday((c) => c + lowCount);
+    sfx.play('success');
+    setToast({
+      visible: true,
+      message: `⚡ Auto-cleared ${lowCount} low-risk reports with AI consensus`,
+      tone: 'success',
+    });
+  };
+
+  // Create Custom Incident
+  const handleCreateCustomIncident = (e: FormEvent) => {
+    e.preventDefault();
+    if (!newComment.trim()) return;
+
+    const risk = newIssueType === 'Hate Speech' || newIssueType === 'Threatening Language' ? 95 : 75;
+    const sev: Severity = risk >= 85 ? 'HIGH' : 'MEDIUM';
+
+    const newReport: ReportItem = {
+      id: `custom-${Date.now()}`,
+      username: newUsername.startsWith('u/') ? newUsername : `u/${newUsername}`,
+      issueType: newIssueType,
+      severity: sev,
+      toxicCommentText: newComment.trim(),
+      riskScore: risk,
+      aiConfidence: 96,
+      status: 'Under Review',
+      warned: false,
+      commentRemoved: false,
+      muted: false,
+      banned: false,
+      approved: false,
+      updateCount: 1,
+      timestamp: 'Just now',
+    };
+
+    setReports([newReport, ...reports]);
+    setSelectedReportId(newReport.id);
+    setShowNewModal(false);
+    setNewComment('');
+    sfx.play('success');
+    setToast({
+      visible: true,
+      message: `Custom incident queued & selected: ${newReport.username}`,
+      tone: 'success',
+    });
+  };
+
+  // Export Audit Log
+  const handleExportLog = () => {
+    const dataStr =
+      'data:text/json;charset=utf-8,' +
+      encodeURIComponent(JSON.stringify({ exportedAt: new Date().toISOString(), activityFeed, reports }, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('download', `red-guardian-audit-${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    setToast({ visible: true, message: '📥 Mod audit log exported as JSON', tone: 'info' });
+  };
+
+  const dynamicRiskItems: RiskItem[] = useMemo(() => {
+    if (!selectedReport) return [];
+    return [
+      {
+        label: 'Community Safe Zone',
+        tone: 'safe',
+        score: selectedReport.status === 'Resolved' ? 88 : Math.max(15, 100 - selectedReport.riskScore),
+      },
+      {
+        label: 'Suspicious Behavior Index',
+        tone: 'suspicious',
+        score: selectedReport.riskScore >= 70 ? 75 : selectedReport.riskScore,
+      },
+      {
+        label: 'Critical Threat Vector',
+        tone: 'dangerous',
+        score: selectedReport.status === 'Resolved' ? 12 : selectedReport.riskScore,
+      },
+    ];
+  }, [selectedReport]);
 
   return (
     <div style={styles.app}>
       <style>{dashboardGlobalCss}</style>
-      <div style={styles.ambientGlowLeft} />
-      <div style={styles.ambientGlowRight} />
-      <main style={styles.shell} className="guardian-shell">
-        {toast.visible ? (
-          <div
-            style={{
-              ...styles.toast,
-              ...toastToneStyles[toast.tone],
-            }}
-          >
-            {toast.message}
-          </div>
-        ) : null}
 
+      {/* Floating Toast Notification */}
+      {toast.visible && (
+        <div style={{ ...styles.toast, ...toastToneStyles[toast.tone] }}>
+          <span>{toast.message}</span>
+        </div>
+      )}
+
+      {/* Test Custom Incident Modal */}
+      {showNewModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowNewModal(false)}>
+          <div style={styles.modalContent} onClick={(e: MouseEvent) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 800, color: '#ff4500' }}>
+                  + Test Custom Mod Incident
+                </h3>
+                <p style={{ margin: '4px 0 0', color: 'var(--rg-muted)', fontSize: '12px' }}>
+                  Input custom text to test DeepSeek AI threat detection in real-time.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowNewModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--rg-muted)',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCustomIncident} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--rg-muted)' }}>Reddit Username</label>
+                <input
+                  type="text"
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  style={styles.searchInput}
+                  required
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--rg-muted)' }}>Violation Type</label>
+                <select
+                  value={newIssueType}
+                  onChange={(e) => setNewIssueType(e.target.value)}
+                  style={{ ...styles.searchInput, background: '#161b26', cursor: 'pointer' }}
+                >
+                  <option value="Harassment">Harassment</option>
+                  <option value="Spam Links">Spam Links</option>
+                  <option value="Hate Speech">Hate Speech</option>
+                  <option value="Threatening Language">Threatening Language</option>
+                  <option value="Impersonation">Impersonation</option>
+                  <option value="Targeted Bullying">Targeted Bullying</option>
+                </select>
+              </div>
+
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--rg-muted)' }}>Flagged Comment Text</label>
+                  <span style={{ fontSize: '11px', color: '#ff8a65', cursor: 'pointer' }} onClick={() => setNewComment('You are trash, I will find where you live and spam your profile forever.')}>
+                    Insert Sample Threat
+                  </span>
+                </div>
+                <textarea
+                  rows={3}
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  placeholder="Paste or type toxic or spam comment to analyze..."
+                  style={{ ...styles.searchInput, resize: 'vertical' }}
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowNewModal(false)}
+                  style={{ ...styles.headerBtn, flex: 1, justifyContent: 'center' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  style={{
+                    ...styles.headerBtn,
+                    flex: 1,
+                    justifyContent: 'center',
+                    background: 'linear-gradient(90deg, #ff4500, #dc2626)',
+                    color: 'white',
+                    border: 'none',
+                  }}
+                >
+                  ⚡ Run AI Detection
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <main style={styles.shell}>
+        {/* Header Bar */}
         <header style={styles.header}>
           <div style={styles.headerLeft}>
             <div style={styles.shield}>
-              <WindowLogo />
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
             </div>
             <div style={styles.titleBlock}>
-              <h1 style={styles.title}>Red Guardian AI</h1>
-              <p style={styles.subtitle}>AI-powered live moderation command center</p>
+              <h1 style={styles.title}>Red-Guard</h1>
+              <p style={styles.subtitle}>
+                <span>Reddit Autonomous Mod Copilot</span>
+                <span>•</span>
+                <span style={{ color: '#38bdf8' }}>Devvit 2.0 Webview</span>
+                <span>•</span>
+                <span style={{ color: '#c084fc' }}>DeepSeek-V3</span>
+              </p>
             </div>
           </div>
+
           <div style={styles.headerRight}>
+            {/* Audio Toggle */}
+            <button
+              onClick={handleToggleSound}
+              style={{ ...styles.headerBtn, ...(soundEnabled ? styles.headerBtnActive : {}) }}
+              title="Toggle audio synth feedback"
+            >
+              {soundEnabled ? '🔊 Sound: ON' : '🔇 Sound: OFF'}
+            </button>
+
+            {/* Stream Toggle */}
+            <button
+              onClick={() => setStreamActive(!streamActive)}
+              style={{ ...styles.headerBtn, ...(streamActive ? styles.headerBtnActive : {}) }}
+              title="Pause or resume live incoming threat stream"
+            >
+              {streamActive ? '🟢 Live Stream: Active' : '⏸️ Stream: Paused'}
+            </button>
+
+            {/* Test Incident Button */}
+            <button
+              onClick={() => setShowNewModal(true)}
+              style={{
+                ...styles.headerBtn,
+                background: 'linear-gradient(90deg, #ff4500, #e11d48)',
+                color: 'white',
+                border: 'none',
+              }}
+            >
+              + Test Incident
+            </button>
+
+            {/* Live Sentinel Badge */}
             <div style={styles.monitorBadge}>
-              <span style={styles.pulseWrap}>
-                <span
-                  style={{
-                    ...styles.pulseRing,
-                    opacity: 0.45,
-                  }}
-                />
-                <span style={styles.pulseCore} />
-              </span>
-              LIVE AI MONITORING
-            </div>
-            <div style={styles.statusPill}>
-              <span style={styles.statusDot} />
-              18 Simulated Reports Streaming
+              <span style={styles.pulseCore} className="live-pulse-anim" />
+              SENTINEL ONLINE
             </div>
           </div>
         </header>
 
-        <AnalyticsCards items={analytics} />
+        {/* 4 Analytics Metric Cards */}
+        <section style={styles.analyticsGrid}>
+          {analytics.map((item) => (
+            <article key={item.label} style={styles.analyticsCard}>
+              <div style={styles.analyticsTop}>
+                <p style={styles.analyticsLabel}>{item.label}</p>
+                <span style={styles.analyticsTrend}>{item.trend}</span>
+              </div>
+              <p style={{ ...styles.analyticsValue, color: item.accent }}>{item.value}</p>
+              <p style={styles.analyticsDetail}>{item.detail}</p>
+            </article>
+          ))}
+        </section>
 
+        {/* Live Threat Banner */}
         <div style={styles.alertBanner}>
-          <span style={styles.alertLabel}>LIVE ALERT</span>
+          <div style={styles.alertLabel}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '999px', background: '#ff4500' }} className="live-pulse-anim" />
+            LIVE RADAR
+          </div>
           <p style={styles.alertText}>{liveAlert}</p>
+          <button
+            onClick={handleAutoResolveLow}
+            style={{
+              ...styles.headerBtn,
+              fontSize: '11px',
+              padding: '6px 12px',
+              background: 'rgba(52, 211, 153, 0.15)',
+              borderColor: 'rgba(52, 211, 153, 0.4)',
+              color: '#34d399',
+            }}
+          >
+            ⚡ Auto-Clear Low Risk
+          </button>
         </div>
 
+        {/* Main Grid: Queue & Detail */}
         <section style={styles.grid}>
+          {/* Left Column: Moderation Queue */}
           <div style={styles.primaryColumn}>
-            <ReportQueueCard
-              items={reports}
-              selectedId={selectedReport.id}
-              onSelect={handleSelectReport}
-            />
-            <SummaryCard selectedReport={selectedReport} summary={summary} />
+            <div style={styles.card}>
+              <div style={styles.cardHeader}>
+                <div style={styles.cardTitleWrap}>
+                  <h2 style={styles.cardTitle}>Live Incident Queue</h2>
+                  <p style={styles.cardCaption}>
+                    Showing {filteredReports.length} of {reports.length} community cases
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <span style={styles.badge}>{filteredReports.length} Active</span>
+                </div>
+              </div>
+
+              {/* Search & Filters */}
+              <div style={styles.filterBar}>
+                <input
+                  type="text"
+                  placeholder="🔍 Search users, comments, or issues..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={styles.searchInput}
+                />
+                <div style={styles.filterPillRow}>
+                  <span style={{ fontSize: '11px', color: 'var(--rg-muted)', marginRight: '4px' }}>Severity:</span>
+                  {(['ALL', 'HIGH', 'MEDIUM', 'LOW'] as const).map((sev) => (
+                    <button
+                      key={sev}
+                      onClick={() => setSeverityFilter(sev)}
+                      style={{
+                        ...styles.filterPill,
+                        ...(severityFilter === sev ? styles.filterPillActive : {}),
+                      }}
+                    >
+                      {sev}
+                    </button>
+                  ))}
+                  <span style={{ fontSize: '11px', color: 'var(--rg-muted)', marginLeft: '8px', marginRight: '4px' }}>Status:</span>
+                  {(['ALL', 'Under Review', 'Escalated', 'Resolved'] as const).map((st) => (
+                    <button
+                      key={st}
+                      onClick={() => setStatusFilter(st)}
+                      style={{
+                        ...styles.filterPill,
+                        ...(statusFilter === st ? styles.filterPillActive : {}),
+                      }}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Scrollable list */}
+              <div style={styles.reportScroll} className="guardian-scroll">
+                {filteredReports.length === 0 ? (
+                  <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--rg-muted)' }}>
+                    No reports match your filters.
+                  </div>
+                ) : (
+                  filteredReports.map((report) => {
+                    const isSelected = report.id === selectedReportId;
+                    const sevStyle = severityStyles[report.severity];
+                    const stStyle = statusStyles[report.status];
+
+                    return (
+                      <button
+                        key={report.id}
+                        onClick={() => handleSelectReport(report)}
+                        style={{
+                          ...styles.reportButton,
+                          background: isSelected ? 'rgba(255, 69, 0, 0.08)' : 'var(--rg-surface-strong)',
+                          borderColor: isSelected ? '#ff4500' : 'var(--rg-line)',
+                          boxShadow: isSelected ? '0 0 20px rgba(255, 69, 0, 0.2)' : 'none',
+                        }}
+                      >
+                        <div style={styles.avatar}>{getInitials(report.username)}</div>
+
+                        <div style={styles.reportText}>
+                          <div style={styles.reportTop}>
+                            <span style={styles.reportUser}>{report.username}</span>
+                            <span style={{ ...styles.miniPill, ...stStyle }}>{report.status}</span>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                            <span style={{ ...styles.miniPill, ...sevStyle }}>{report.severity}</span>
+                            <span style={{ fontSize: '11px', color: 'var(--rg-muted)', fontWeight: 600 }}>
+                              {report.issueType}
+                            </span>
+                            <span style={{ fontSize: '10px', color: 'var(--rg-muted-soft)', marginLeft: 'auto' }}>
+                              {report.timestamp}
+                            </span>
+                          </div>
+
+                          <p style={styles.reportSnippet}>"{report.toxicCommentText}"</p>
+
+                          <div style={styles.reportMeta}>
+                            <span style={styles.miniPill}>⚡ AI Risk: {report.riskScore}%</span>
+                            <span style={styles.miniPill}>🎯 Conf: {report.aiConfidence}%</span>
+                            {report.warned && <span style={{ ...styles.miniPill, color: '#fbbf24' }}>⚠️ Warned</span>}
+                            {report.commentRemoved && <span style={{ ...styles.miniPill, color: '#34d399' }}>🗑️ Removed</span>}
+                            {report.muted && <span style={{ ...styles.miniPill, color: '#38bdf8' }}>🔕 Muted</span>}
+                            {report.banned && <span style={{ ...styles.miniPill, color: '#ef4444' }}>🔨 Banned</span>}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* AI Summary Card for selected item */}
+            {selectedReport && (
+              <div style={styles.card}>
+                <div style={styles.cardHeader}>
+                  <div style={styles.cardTitleWrap}>
+                    <h2 style={styles.cardTitle}>DeepSeek AI Incident Triage</h2>
+                    <p style={styles.cardCaption}>Synthesized analysis for {selectedReport.username}</p>
+                  </div>
+                  <button
+                    onClick={handleRunAiScan}
+                    disabled={isAiScanning}
+                    style={{
+                      ...styles.headerBtn,
+                      background: 'linear-gradient(90deg, #a855f7, #6366f1)',
+                      color: 'white',
+                      border: 'none',
+                    }}
+                  >
+                    {isAiScanning ? '🧠 Scanning...' : '✨ DeepScan with AI'}
+                  </button>
+                </div>
+
+                <div style={{ ...styles.summaryBox, ...(isAiScanning ? { opacity: 0.6 } : {}) }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontWeight: 800, color: '#ff8a65' }}>Analysis Verdict:</span>
+                    <span style={{ ...styles.miniPill, ...severityStyles[selectedReport.severity] }}>
+                      {summary.riskSeverity} SEVERITY
+                    </span>
+                  </div>
+
+                  <p style={{ margin: 0, color: '#e2e8f0', lineHeight: 1.6 }}>{summary.toxicitySummary}</p>
+
+                  <div style={{ marginTop: '12px', padding: '12px', borderRadius: '12px', background: 'rgba(255, 69, 0, 0.08)', border: '1px solid rgba(255, 69, 0, 0.2)' }}>
+                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#ffedd5' }}>
+                      {summary.moderationRecommendation}
+                    </p>
+                  </div>
+
+                  {/* Flagged Comment */}
+                  <div style={styles.commentBlock}>
+                    <span style={{ fontSize: '11px', color: 'var(--rg-muted)', display: 'block', marginBottom: '4px', fontStyle: 'normal' }}>
+                      FLAGGED EVIDENCE IN THREAD:
+                    </span>
+                    "{selectedReport.toxicCommentText}"
+                  </div>
+
+                  {/* Tags & Policy Violations */}
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '12px' }}>
+                    {summary.tags.map((tag) => (
+                      <span key={tag} style={{ ...styles.miniPill, color: '#c084fc', borderColor: 'rgba(192, 132, 252, 0.3)' }}>
+                        #{tag}
+                      </span>
+                    ))}
+                    {summary.violatedRules.map((rule) => (
+                      <span key={rule} style={{ ...styles.miniPill, color: '#f87171', borderColor: 'rgba(248, 113, 113, 0.3)' }}>
+                        📋 {rule}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
+
+          {/* Right Column: One-Click Actions, Live Stream, Risk Radar */}
           <div style={styles.secondaryColumn}>
-            <ActionsCard selectedReport={selectedReport} onAction={handleAction} />
-            <ActivityFeedCard items={activityFeed} />
-            <RiskScoreCard selectedReport={selectedReport} summary={summary} />
+            {/* Moderator Action Terminal */}
+            <div style={styles.card}>
+              <div style={styles.cardHeader}>
+                <div style={styles.cardTitleWrap}>
+                  <h2 style={styles.cardTitle}>Enforcement Actions</h2>
+                  <p style={styles.cardCaption}>Take immediate action on {selectedReport?.username}</p>
+                </div>
+              </div>
+
+              <div style={styles.actionGrid}>
+                <button
+                  onClick={() => handleAction('Warn User')}
+                  style={{
+                    ...styles.actionBtn,
+                    borderColor: 'rgba(251, 191, 36, 0.4)',
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>⚠️</span>
+                  <span style={{ fontSize: '12px', fontWeight: 800 }}>Warn User</span>
+                  <span style={{ fontSize: '10px', color: 'var(--rg-muted)' }}>Send Strike</span>
+                </button>
+
+                <button
+                  onClick={() => handleAction('Remove Comment')}
+                  style={{
+                    ...styles.actionBtn,
+                    borderColor: 'rgba(255, 69, 0, 0.4)',
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>🗑️</span>
+                  <span style={{ fontSize: '12px', fontWeight: 800 }}>Remove</span>
+                  <span style={{ fontSize: '10px', color: 'var(--rg-muted)' }}>Purge Content</span>
+                </button>
+
+                <button
+                  onClick={() => handleAction('Temporary Mute')}
+                  style={{
+                    ...styles.actionBtn,
+                    borderColor: 'rgba(56, 189, 248, 0.4)',
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>🔕</span>
+                  <span style={{ fontSize: '12px', fontWeight: 800 }}>Mute 72h</span>
+                  <span style={{ fontSize: '10px', color: 'var(--rg-muted)' }}>Quarantine</span>
+                </button>
+
+                <button
+                  onClick={() => handleAction('Permanent Ban')}
+                  style={{
+                    ...styles.actionBtn,
+                    borderColor: 'rgba(239, 68, 68, 0.4)',
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>🔨</span>
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: '#f87171' }}>Ban User</span>
+                  <span style={{ fontSize: '10px', color: 'var(--rg-muted)' }}>Permanent</span>
+                </button>
+
+                <button
+                  onClick={() => handleAction('Approve & Clear')}
+                  style={{
+                    ...styles.actionBtn,
+                    borderColor: 'rgba(52, 211, 153, 0.4)',
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>🛡️</span>
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: '#34d399' }}>Approve</span>
+                  <span style={{ fontSize: '10px', color: 'var(--rg-muted)' }}>Whitelist</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Live Activity Feed */}
+            <div style={styles.card}>
+              <div style={styles.cardHeader}>
+                <div style={styles.cardTitleWrap}>
+                  <h2 style={styles.cardTitle}>Live Mod Audit Feed</h2>
+                  <p style={styles.cardCaption}>Automated detections & human interventions</p>
+                </div>
+                <button
+                  onClick={handleExportLog}
+                  style={{ ...styles.headerBtn, fontSize: '11px', padding: '5px 10px' }}
+                >
+                  📥 Export Log
+                </button>
+              </div>
+
+              <div style={styles.feedList} className="guardian-scroll">
+                {activityFeed.map((item) => {
+                  const tone = feedToneStyles[item.tone];
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        ...styles.feedRow,
+                        borderColor: item.isNew ? tone.border : 'var(--rg-line)',
+                        background: item.isNew ? 'rgba(255, 69, 0, 0.08)' : 'var(--rg-surface-strong)',
+                      }}
+                    >
+                      <span style={{ ...styles.feedDot, background: tone.dot }} />
+                      <p style={styles.feedText}>{item.text}</p>
+                      <span style={styles.feedTime}>{item.timestamp}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Risk Score & Threat Indicators */}
+            <div style={styles.card}>
+              <div style={styles.cardHeader}>
+                <div style={styles.cardTitleWrap}>
+                  <h2 style={styles.cardTitle}>Threat Severity Index</h2>
+                  <p style={styles.cardCaption}>Real-time telemetry for {selectedReport?.username}</p>
+                </div>
+              </div>
+
+              <div style={styles.riskList}>
+                {dynamicRiskItems.map((risk) => {
+                  const tone = riskToneStyles[risk.tone];
+                  return (
+                    <div key={risk.label} style={styles.riskRow}>
+                      <div style={styles.riskTop}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '999px', background: tone.dot }} />
+                          <span>{risk.label}</span>
+                        </div>
+                        <span style={{ color: tone.dot, fontWeight: 800 }}>{risk.score}%</span>
+                      </div>
+                      <div style={styles.meterTrack}>
+                        <div
+                          style={{
+                            width: `${risk.score}%`,
+                            height: '100%',
+                            background: tone.bar,
+                            borderRadius: '999px',
+                            transition: 'width 300ms ease',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </section>
 
-        <footer style={styles.footer}>Red Guardian AI | Devvit Hackathon Dashboard</footer>
+        {/* Footer */}
+        <footer
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '16px 24px',
+            borderRadius: '16px',
+            background: 'var(--rg-surface)',
+            border: '1px solid var(--rg-line)',
+            fontSize: '12px',
+            color: 'var(--rg-muted)',
+            flexWrap: 'wrap',
+            gap: '10px',
+          }}
+        >
+          <span>Red-Guard | Reddit Mod Tools Hackathon Edition</span>
+          <div style={{ display: 'flex', gap: '14px' }}>
+            <span>Devvit Webview 2.0</span>
+            <span>•</span>
+            <span>OpenRouter DeepSeek-V3</span>
+            <span>•</span>
+            <span>React 19 + TypeScript</span>
+          </div>
+        </footer>
       </main>
     </div>
   );

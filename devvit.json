@@ -20,23 +20,20 @@
   "menu": {
     "items": [
       {
-        "label": "Create a new post",
-        "description": "red-guardian-ai",
+        "label": "🛡️ Deploy Red Guardian Hub",
+        "description": "Create the Red Guardian AI moderation radar post",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/post-create"
       },
       {
-        "label": "Example form",
-        "description": "Show a simple form",
+        "label": "⚡ Sentinel AI Status",
+        "description": "Check real-time subreddit protection status",
         "location": "subreddit",
         "forUserType": "moderator",
-        "endpoint": "/internal/menu/example-form"
+        "endpoint": "/internal/menu/sentinel-status"
       }
     ]
-  },
-  "forms": {
-    "exampleForm": "/internal/form/example-submit"
   },
   "triggers": {
     "onAppInstall": "/internal/triggers/on-app-install"
